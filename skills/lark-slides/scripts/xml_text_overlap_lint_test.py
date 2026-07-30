@@ -1004,9 +1004,17 @@ class XmlTextOverlapLintGeometryTest(unittest.TestCase):
             """
         )
         overlap_pairs = {tuple(issue["elements"]) for issue in result["slides"][0]["issues"]}
-        self.assertEqual(result["summary"]["error_count"], 2)
+        # Two caption/label pairs overlap; blV also trips the width-wrap rule (its 15-char
+        # caption renders wider than its 150px box), which is an intentional error here.
+        self.assertEqual(result["summary"]["error_count"], 3)
         self.assertIn(("blY", "blV"), overlap_pairs)
         self.assertIn(("blQ", "blS"), overlap_pairs)
+        wrap_ids = {
+            issue["elements"][0]
+            for issue in result["slides"][0]["issues"]
+            if issue.get("overflow_axis") == "width"
+        }
+        self.assertEqual(wrap_ids, {"blV"})
 
     def test_lint_xml_detects_horizontal_text_overflow_across_declared_box_gap(self) -> None:
         result = xml_text_overlap_lint.lint_xml(
@@ -1118,6 +1126,42 @@ class XmlTextOverlapLintGeometryTest(unittest.TestCase):
         self.assertEqual(overflowing_issue["available_height"], 80)
         self.assertEqual(overflowing_issue["overflow"], 30)
         self.assertIn('wrap="true" autoFit="normal-auto-fit"', overflowing_issue["message"])
+
+    def test_lint_xml_detects_short_label_that_wraps_by_width(self) -> None:
+        result = xml_text_overlap_lint.lint_xml(
+            """
+            <slide xmlns="http://www.larkoffice.com/sml/2.0">
+              <data>
+                <shape id="near-fit" type="text" topLeftX="40" topLeftY="40" width="176" height="96">
+                  <content textType="sub-headline" fontSize="32" fontFamily="思源黑体" bold="true"><p>Slides 87% </p></content>
+                </shape>
+                <shape id="under-measured" type="text" topLeftX="40" topLeftY="160" width="136" height="90">
+                  <content fontSize="30" fontFamily="黑体"><p>Docs 99%</p></content>
+                </shape>
+                <shape id="auto-fit-spaced" type="text" topLeftX="300" topLeftY="40" width="227" height="96">
+                  <content textType="sub-headline" fontSize="32" fontFamily="思源黑体" bold="true" autoFit="shape-auto-fit"><p>autofix      87% </p></content>
+                </shape>
+                <shape id="no-wrap-label" type="text" topLeftX="300" topLeftY="160" width="136" height="90">
+                  <content fontSize="30" fontFamily="黑体" wrap="false"><p>Docs 99%</p></content>
+                </shape>
+                <shape id="comfortable" type="text" topLeftX="600" topLeftY="40" width="300" height="60">
+                  <content fontSize="24" fontFamily="思源黑体"><p>OK</p></content>
+                </shape>
+              </data>
+            </slide>
+            """
+        )
+        wrap_issues = [
+            issue for issue in result["slides"][0]["issues"] if issue.get("overflow_axis") == "width"
+        ]
+        wrap_ids = {issue["elements"][0] for issue in wrap_issues}
+        # The three real false-negatives are caught, independent of autoFit and collapsed spaces.
+        self.assertEqual(wrap_ids, {"near-fit", "under-measured", "auto-fit-spaced"})
+        self.assertTrue(all(issue["level"] == "error" for issue in wrap_issues))
+        self.assertTrue(all(issue["code"] == "text_may_overflow_shape" for issue in wrap_issues))
+        # wrap="false" opts a run out; a label that comfortably fits is not flagged.
+        self.assertNotIn("no-wrap-label", wrap_ids)
+        self.assertNotIn("comfortable", wrap_ids)
 
     def test_lint_xml_uses_fixed_line_spacing_for_text_height_warning(self) -> None:
         result = xml_text_overlap_lint.lint_xml(

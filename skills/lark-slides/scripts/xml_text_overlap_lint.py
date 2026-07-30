@@ -57,6 +57,14 @@ TEXT_HEIGHT_OVERFLOW_TOLERANCE_PX = 0.5
 SINGLE_LINE_METRIC_WIDTH_RATIO = 1.18
 CENTERED_SHORT_LABEL_WIDTH_RATIO = 1.12
 HEADLINE_NEAR_FIT_WIDTH_RATIO = 1.04
+# A single-hard-line text run whose estimated visual width reaches this fraction of its content box
+# is at risk of wrapping on the real (Skia) renderer. The width estimator can under-report by ~10%
+# for short bold/latin runs, so we flag well below 100% to guarantee no real wrap escapes -- the
+# team's release gate for these decks prefers false positives over any missed wrap.
+TEXT_WIDTH_WRAP_RISK_RATIO = 0.85
+# Only short single-line labels/metrics are candidates for the width-wrap rule; longer runs are
+# prose meant to wrap. 16 matches is_short_metric_text's compact-length cap.
+SHORT_LABEL_WRAP_MAX_CHARS = 16
 DENSE_BODY_LINE_SPACING_MAX_MULTIPLE = 1.6
 GHOST_TEXT_MIN_FONT_SIZE = 96
 GHOST_TEXT_MAX_ALPHA = 0.5
@@ -271,6 +279,26 @@ def strip_xml_paragraphs(value: str) -> str:
     if paragraphs:
         return "\n".join(strip_xml(paragraph, preserve_line_breaks=True) for paragraph in paragraphs)
     return strip_xml(value, preserve_line_breaks=True)
+
+
+def strip_xml_paragraphs_preserving_spaces(value: str) -> str:
+    """Like strip_xml_paragraphs but keeps runs of internal spaces intact.
+
+    Slides readback echoes multi-space runs verbatim (e.g. "autofix      87%") and Skia
+    renders them at full width, but strip_xml collapses whitespace, hiding real wraps from
+    width estimation. Used only by detect_text_may_wrap_shapes to avoid under-measuring.
+    """
+    def strip_line_tags(fragment: str) -> str:
+        stripped = re.sub(r"<!\[CDATA\[([\s\S]*?)\]\]>", r"\1", fragment)
+        stripped = re.sub(r"<br\b[^>]*>", "\n", stripped)
+        stripped = re.sub(r"<[^>]+>", "", stripped)
+        stripped = stripped.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<")
+        stripped = stripped.replace("&gt;", ">").replace("&quot;", '"').replace("&#39;", "'")
+        return stripped
+
+    paragraphs = re.findall(r"<p\b[^>]*>([\s\S]*?)</p\s*>", value)
+    fragments = paragraphs if paragraphs else [value]
+    return "\n".join(strip_line_tags(fragment) for fragment in fragments)
 
 
 def extract_text_paragraphs(value: str, default_font_size: int | float) -> list[dict[str, Any]]:
@@ -860,6 +888,7 @@ def extract_elements(slide_xml: str) -> list[dict[str, Any]]:
                         "bold": bold,
                         "italic": italic,
                         "text": strip_xml_paragraphs(content),
+                        "text_raw": strip_xml_paragraphs_preserving_spaces(content),
                         "paragraphs": extract_text_paragraphs(content, font_size if font_size is not None else 16),
                     }
                 )
@@ -1296,6 +1325,7 @@ def detect_text_may_overflow_shapes(elements: list[dict[str, Any]]) -> list[dict
             {
                 "level": level,
                 "code": "text_may_overflow_shape",
+                "overflow_axis": "height",
                 "elements": [element["id"]],
                 "line_count": line_count,
                 "line_height": max(line_heights),
@@ -1307,6 +1337,92 @@ def detect_text_may_overflow_shapes(elements: list[dict[str, Any]]) -> list[dict
                     "Increase shape.height, reduce the text, or set content wrap=\"true\" "
                     "autoFit=\"normal-auto-fit\". "
                     "This is an estimate based on font size, line spacing, and wrapped line count."
+                ),
+            }
+        )
+    return issues
+
+
+def detect_text_may_wrap_shapes(
+    elements: list[dict[str, Any]], already_flagged_ids: set[str] | None = None
+) -> list[dict[str, Any]]:
+    """Flag single-line text runs whose width is likely to wrap inside their own box.
+
+    Complements detect_text_may_overflow_shapes, which only measures the vertical axis.
+    A run can fit vertically (or carry autoFit) yet still wrap because the box is too
+    narrow -- the exact false-negative these slides hit. Width estimation is independent
+    of autoFit (shape-auto-fit only grows height, not width), so this check ignores it.
+    already_flagged_ids are elements the vertical check already reported; we skip them so a
+    single wrapping shape is not double-reported under the shared text_may_overflow_shape code.
+    """
+    already_flagged_ids = already_flagged_ids or set()
+    issues: list[dict[str, Any]] = []
+    for element in elements:
+        if not is_text_element(element) or not has_text_content(element):
+            continue
+        if element["id"] in already_flagged_ids:
+            continue
+        if element.get("wrap") in {"false", "0"}:
+            continue
+        # Multi-hard-line text already wraps by author intent; only single logical lines
+        # that were meant to stay on one line are at risk of an unexpected wrap.
+        if "\n" in element["text"]:
+            continue
+        # Long prose is expected to wrap; this rule targets short labels/metrics
+        # (e.g. "Slides 87%", "autofix 87%") that were meant to stay on one line.
+        if len(re.sub(r"\s+", "", element["text"])) > SHORT_LABEL_WRAP_MAX_CHARS:
+            continue
+
+        # Measure with internal spaces preserved: Skia renders "autofix      87%" at full
+        # width, but element["text"] has collapsed them, which would hide the wrap.
+        raw_line = (element.get("text_raw") or element["text"]).rstrip()
+        font_size = element["fontSize"] if isinstance(element["fontSize"], (int, float)) else 16
+        visual_width = max(
+            estimate_text_width(
+                raw_line, font_size, resolve_letter_spacing(element), element.get("bold", False),
+                element.get("fontFamily", ""),
+            ),
+            1,
+        )
+        available_width = max(element["width"] - element.get("paddingLeft", 0) - element.get("paddingRight", 0), 1)
+        effective_width = available_width + text_wrap_width_tolerance()
+        # Plain numeric metrics ("4.16万亿", "1,380") render on one line despite width jitter, so
+        # the codebase tolerates them up to SINGLE_LINE_METRIC_WIDTH_RATIO (see
+        # is_single_line_visual_candidate). Latin/labeled runs ("Docs 99%", "Slides 87%") are where
+        # the width estimator under-reports, so flag them from the aggressive risk band up to
+        # guarantee no real wrap is missed. Pure CJK breaks per glyph and is estimated accurately,
+        # so it only wraps once it genuinely exceeds the box.
+        if is_short_metric_text(raw_line) and not is_labeled_short_metric_text(raw_line):
+            threshold = available_width * SINGLE_LINE_METRIC_WIDTH_RATIO
+        elif re.search(r"[A-Za-z]", raw_line):
+            threshold = available_width * TEXT_WIDTH_WRAP_RISK_RATIO
+        else:
+            threshold = effective_width
+        if visual_width <= threshold:
+            continue
+
+        ratio = visual_width / available_width
+        message = (
+            f'text shape {element["id"]} may wrap inside its own content box '
+            f'(estimated line {visual_width:g}px, available {available_width:g}px); '
+            'widen the shape, reduce the text, or set content wrap="false"'
+        )
+        issues.append(
+            {
+                "level": "error",
+                # Shares the text_may_overflow_shape code with the vertical check: to the user this is
+                # one concept ("text may overflow its box"), while the two axes stay in separate
+                # functions. The overflow_axis field distinguishes them for tooling.
+                "code": "text_may_overflow_shape",
+                "overflow_axis": "width",
+                "elements": [element["id"]],
+                "estimated_width": visual_width,
+                "available_width": available_width,
+                "width_ratio": ratio,
+                "message": message,
+                "hint": (
+                    "Increase shape.width, shorten the text, or set content wrap=\"false\" if the run "
+                    "must stay on one line. This is an estimate based on font size, weight, and glyph widths."
                 ),
             }
         )
@@ -1871,11 +1987,16 @@ def lint_slide(
     slide_xml: str, slide_number: int, slide_width: int | float = 960, slide_height: int | float = 540
 ) -> dict[str, Any]:
     elements = extract_elements(slide_xml)
+    height_overflow_issues = detect_text_may_overflow_shapes(elements)
+    height_overflow_ids = {
+        element_id for issue in height_overflow_issues for element_id in issue["elements"]
+    }
     issues: list[dict[str, Any]] = [
         *detect_whiteboard_external_overlaps(elements, slide_width, slide_height),
         *detect_elements_out_of_canvas(elements, slide_width, slide_height),
         *detect_table_layout_size_mismatches(elements),
-        *detect_text_may_overflow_shapes(elements),
+        *height_overflow_issues,
+        *detect_text_may_wrap_shapes(elements, height_overflow_ids),
         *detect_image_text_occlusions(elements),
         *detect_line_text_crossings(slide_xml, elements),
     ]

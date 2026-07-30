@@ -902,8 +902,6 @@ def detect_image_text_occlusions(elements: list[dict[str, Any]]) -> list[dict[st
     image_elements = [element for element in elements if element["kind"] == "img" and element["alpha"] > 0]
     for text_element in text_elements:
         for image_element in image_elements:
-            if image_element["order"] <= text_element["order"]:
-                continue
             if is_vertical_text(text_element):
                 if intersects(image_element, text_element):
                     issues.append({
@@ -921,7 +919,7 @@ def detect_image_text_occlusions(elements: list[dict[str, Any]]) -> list[dict[st
                     "code": "image_covers_text",
                     "elements": [image_element["id"], text_element["id"]],
                     "message": f'image {image_element["id"]} covers text shape {text_element["id"]}',
-                    "hint": "Move the image before the text shape in XML order, or adjust the image and text shape coordinates or dimensions.",
+                    "hint": "Adjust the image and text shape coordinates or dimensions so the image no longer overlaps the text glyph area.",
                 })
     return issues
 

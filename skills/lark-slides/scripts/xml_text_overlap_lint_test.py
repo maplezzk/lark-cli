@@ -1738,10 +1738,10 @@ class XmlTextOverlapLintGeometryTest(unittest.TestCase):
               <slide xmlns="http://www.larkoffice.com/sml/2.0">
                 <data>
                   <img src="tok" topLeftX="-120" topLeftY="20" width="360" height="360"/>
-                  <shape type="text" topLeftX="40" topLeftY="80" width="180" height="80">
+                  <shape type="text" topLeftX="300" topLeftY="80" width="180" height="80">
                     <content textType="title" fontSize="44"><p>Title</p></content>
                   </shape>
-                  <shape type="text" topLeftX="40" topLeftY="120" width="180" height="40">
+                  <shape type="text" topLeftX="300" topLeftY="170" width="180" height="40">
                     <content textType="sub-headline" fontSize="20"><p>Subtitle</p></content>
                   </shape>
                 </data>
@@ -2480,6 +2480,22 @@ class XmlTextOverlapLintGeometryTest(unittest.TestCase):
         self.assertEqual(issue["level"], "info")
         self.assertEqual(result["summary"]["error_count"], 0)
         self.assertEqual(result["summary"]["info_count"], 1)
+
+    def test_lint_xml_reports_image_text_overlap_even_when_image_precedes_text_in_xml_order(self) -> None:
+        result = xml_text_overlap_lint.lint_xml(
+            """
+            <slide xmlns="http://www.larkoffice.com/sml/2.0"><data>
+              <img id="image" src="token" topLeftX="120" topLeftY="120" width="120" height="60"/>
+              <shape id="text" type="text" topLeftX="100" topLeftY="100" width="220" height="90">
+                <content fontSize="28" lineSpacing="fixed:34" wrap="false"><p>Quarterly Plan</p></content>
+              </shape>
+            </data></slide>
+            """
+        )
+        issue = next(issue for issue in result["slides"][0]["issues"] if issue["code"] == "image_covers_text")
+        self.assertEqual(issue["elements"], ["image", "text"])
+        self.assertIn("no longer overlaps the text glyph area", issue["hint"])
+        self.assertEqual(result["summary"]["error_count"], 1)
 
 
 class XmlTextOverlapLintDensityTest(unittest.TestCase):

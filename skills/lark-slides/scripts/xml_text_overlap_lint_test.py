@@ -1289,6 +1289,97 @@ class XmlTextOverlapLintGeometryTest(unittest.TestCase):
         self.assertEqual(len(overflow_issues), 1)
         self.assertEqual(overflow_issues[0]["elements"], ["plain-age"])
 
+    def test_lint_xml_reports_cjk_credit_with_em_dashes_wrapping_narrow_box(self) -> None:
+        # "—— 李白" in a tight author-credit box wraps in the renderer because the two em-dashes render
+        # full-width inside a CJK run (slides p1: bMW). unicodedata marks em-dash as ambiguous width, so
+        # a naive Latin-punctuation estimate under-reports the line and misses the wrap. The width check
+        # must treat ambiguous glyphs as full-width in CJK context (Bucket A4).
+        result = xml_text_overlap_lint.lint_xml(
+            """
+            <slide xmlns="http://www.larkoffice.com/sml/2.0">
+              <data>
+                <shape id="credit" type="text" topLeftX="66" topLeftY="124" width="46" height="18">
+                  <content fontSize="12"><p>—— 李白</p></content>
+                </shape>
+              </data>
+            </slide>
+            """
+        )
+        wrap_issues = [
+            issue for issue in result["slides"][0]["issues"]
+            if issue["code"] == "text_may_overflow_shape" and issue["elements"] == ["credit"]
+        ]
+        # Promoting the em-dashes to full-width makes the run too wide for the box; the renderer then
+        # wraps it to two lines that also overflow the 18px height, so either the width or the height
+        # detector may surface it first -- the contract is that the credit is flagged, not which axis.
+        self.assertEqual(len(wrap_issues), 1)
+        self.assertIn(wrap_issues[0]["overflow_axis"], {"width", "height"})
+
+    def test_lint_xml_keeps_latin_en_dash_range_narrow(self) -> None:
+        # The ambiguous-width promotion is context-gated: an en-dash in a pure-Latin run ("2020–2023")
+        # stays half-width, so a comfortably-sized box must not be reported. Guards A4 from over-firing
+        # by inflating every dash to full-width regardless of surrounding script.
+        result = xml_text_overlap_lint.lint_xml(
+            """
+            <slide xmlns="http://www.larkoffice.com/sml/2.0">
+              <data>
+                <shape id="range" type="text" topLeftX="80" topLeftY="80" width="140" height="30">
+                  <content fontSize="14"><p>2020–2023</p></content>
+                </shape>
+              </data>
+            </slide>
+            """
+        )
+        wrap_issues = [
+            issue for issue in result["slides"][0]["issues"]
+            if issue["code"] == "text_may_overflow_shape"
+        ]
+        self.assertEqual(wrap_issues, [])
+
+    def test_lint_xml_reports_percent_heavy_run_overflowing_by_full_width_glyph(self) -> None:
+        # "%" is Unicode half-width (Na) but renders near full-width, so a percentage-heavy run wraps to
+        # more lines than a naive punct-coefficient estimate and overflows its box height (slides p3:
+        # bhU "Docs 99%Docs 99%Docs 99%%1"). Measuring "%" at its true advance is what surfaces this.
+        result = xml_text_overlap_lint.lint_xml(
+            """
+            <slide xmlns="http://www.larkoffice.com/sml/2.0">
+              <data>
+                <shape id="metrics" type="text" topLeftX="587" topLeftY="60" width="227" height="100">
+                  <content fontSize="30" autoFit="no-auto-fit"><p>Docs 99%Docs 99%Docs 99%%1</p></content>
+                </shape>
+              </data>
+            </slide>
+            """
+        )
+        overflow = [
+            issue for issue in result["slides"][0]["errors"]
+            if issue["code"] == "text_may_overflow_shape" and issue["elements"] == ["metrics"]
+        ]
+        self.assertEqual(len(overflow), 1)
+
+    def test_lint_xml_marginal_height_warning_does_not_mask_width_error(self) -> None:
+        # A short "Slides 87%" label sized so its wrapped two lines graze the box height by <1px yields a
+        # height *warning*, while the same run is genuinely too wide -> a width *error*. The width error
+        # must still surface: a marginal height warning must not suppress it via already_flagged_ids
+        # (slides p3: bMP/bhd). The run is reported once, at error level.
+        result = xml_text_overlap_lint.lint_xml(
+            """
+            <slide xmlns="http://www.larkoffice.com/sml/2.0">
+              <data>
+                <shape id="label" type="text" topLeftX="244" topLeftY="120" width="176" height="79">
+                  <content fontSize="32" bold="true" autoFit="no-auto-fit"><p>Slides 87%</p></content>
+                </shape>
+              </data>
+            </slide>
+            """
+        )
+        reports = [
+            issue for issue in result["slides"][0]["issues"]
+            if issue["code"] == "text_may_overflow_shape" and issue["elements"] == ["label"]
+        ]
+        self.assertEqual(len(reports), 1)
+        self.assertEqual(reports[0]["level"], "error")
+
     def test_lint_xml_allows_centered_short_label_near_fit_as_single_line(self) -> None:
         result = xml_text_overlap_lint.lint_xml(
             """
@@ -1959,6 +2050,32 @@ class XmlTextOverlapLintGeometryTest(unittest.TestCase):
         ]
         self.assertEqual(len(crossing), 1)
 
+    def test_lint_xml_reports_horizontal_line_inside_wide_line_spacing_span(self) -> None:
+        # 3 lines of fontSize 20 at multiple:1.8 give a real 92px glyph span, but the flat
+        # font_size*1.2 approximation is only 72px. Both boxes centre in the 200px shape, so the flat
+        # eroded box is ~[246,314] while the spacing-aware eroded box is ~[236,324]. A rule at y=240
+        # lands in that top margin -- inside the real glyph rows yet outside the flat box -- so it only
+        # reports once the line-crossing path uses the spacing-aware height (Bucket C, slides p8/p10).
+        result = xml_text_overlap_lint.lint_xml(
+            """
+            <slide xmlns="http://www.larkoffice.com/sml/2.0">
+              <data>
+                <shape id="poem" type="text" topLeftX="80" topLeftY="180" width="360" height="200">
+                  <content fontSize="20" lineSpacing="multiple:1.8"><p>第一行诗句文字</p><p>第二行诗句文字</p><p>第三行诗句文字</p></content>
+                </shape>
+                <line id="rule" startX="80" startY="240" endX="220" endY="240">
+                  <border color="rgb(0, 0, 0)" width="3"/>
+                </line>
+              </data>
+            </slide>
+            """
+        )
+        crossing = [
+            issue for issue in result["slides"][0]["errors"] if set(issue["elements"]) == {"rule", "poem"}
+        ]
+        self.assertEqual(len(crossing), 1)
+        self.assertEqual(crossing[0]["code"], "bbox_overlap")
+
     def test_lint_xml_reports_diagonal_line_crossing_text_block(self) -> None:
         result = xml_text_overlap_lint.lint_xml(
             """
@@ -2387,6 +2504,266 @@ class XmlTextOverlapLintGeometryTest(unittest.TestCase):
         self.assertEqual(result["summary"]["warning_count"], 0)
         self.assertEqual(result["slides"][0]["issues"], [])
 
+    def test_lint_xml_reports_rotated_text_colliding_with_horizontal_text(self) -> None:
+        # A 270-rotated label sweeps a vertical footprint that overlaps a nearby horizontal label. With
+        # rotation-aware glyph boxes the collision is detectable, and because the runs are not parallel
+        # the overlap ratio is tiny so the absolute-area fallback must flag it (slides p6, Bucket D+E).
+        result = xml_text_overlap_lint.lint_xml(
+            """
+            <slide xmlns="http://www.larkoffice.com/sml/2.0">
+              <data>
+                <shape id="flat" type="text" topLeftX="240" topLeftY="200" width="64" height="24">
+                  <content fontSize="16"><p>文字碰撞</p></content>
+                </shape>
+                <shape id="spun" type="text" topLeftX="272" topLeftY="232" width="64" height="24" rotation="270">
+                  <content fontSize="16"><p>文字碰撞</p></content>
+                </shape>
+              </data>
+            </slide>
+            """
+        )
+        collisions = [
+            issue for issue in result["slides"][0]["errors"]
+            if issue["code"] == "bbox_overlap" and set(issue["elements"]) == {"flat", "spun"}
+        ]
+        self.assertEqual(len(collisions), 1)
+
+    def test_lint_xml_still_suppresses_coincident_shadow_text_overlay(self) -> None:
+        # A drop-shadow duplicate offset by a pixel is an intentional overlay; the coincidence check
+        # must keep suppressing it even though the text is identical (guards the E1 tightening).
+        result = xml_text_overlap_lint.lint_xml(
+            """
+            <slide xmlns="http://www.larkoffice.com/sml/2.0">
+              <data>
+                <shape id="shadow" type="text" topLeftX="200" topLeftY="200" width="200" height="40">
+                  <content fontSize="20"><p>标题文字</p></content>
+                </shape>
+                <shape id="fill" type="text" topLeftX="202" topLeftY="202" width="200" height="40">
+                  <content fontSize="20"><p>标题文字</p></content>
+                </shape>
+              </data>
+            </slide>
+            """
+        )
+        collisions = [
+            issue for issue in result["slides"][0]["errors"]
+            if issue["code"] == "bbox_overlap" and set(issue["elements"]) == {"shadow", "fill"}
+        ]
+        self.assertEqual(collisions, [])
+
+    def test_lint_xml_reports_text_overflowing_background_container(self) -> None:
+        # Text anchored inside a background card whose glyph box spills past the card's bottom edge has
+        # outgrown the box the author sized for it (slides p7). The card is drawn first (lower z-order),
+        # so it is the container; the text must surface as text_overflows_container (Bucket B).
+        result = xml_text_overlap_lint.lint_xml(
+            """
+            <slide xmlns="http://www.larkoffice.com/sml/2.0">
+              <data>
+                <shape id="card" type="rect" topLeftX="200" topLeftY="200" width="120" height="40">
+                  <fill><fillColor color="rgba(230,230,230,1)"/></fill>
+                </shape>
+                <shape id="body" type="text" topLeftX="205" topLeftY="205" width="110" height="120">
+                  <content fontSize="16"><p>第一行</p><p>第二行</p><p>第三行</p></content>
+                </shape>
+              </data>
+            </slide>
+            """
+        )
+        overflow = [
+            issue for issue in result["slides"][0]["errors"]
+            if issue["code"] == "text_overflows_container" and set(issue["elements"]) == {"body", "card"}
+        ]
+        self.assertEqual(len(overflow), 1)
+        self.assertGreater(overflow[0]["overflow"]["bottom"], 4)
+
+    def test_lint_xml_ignores_text_fitting_inside_background_container(self) -> None:
+        # Text whose glyph box stays inside its background card is fine; the container rule must stay
+        # silent so tightly-fitted-but-valid cards are not falsely reported.
+        result = xml_text_overlap_lint.lint_xml(
+            """
+            <slide xmlns="http://www.larkoffice.com/sml/2.0">
+              <data>
+                <shape id="card" type="rect" topLeftX="200" topLeftY="200" width="200" height="120">
+                  <fill><fillColor color="rgba(230,230,230,1)"/></fill>
+                </shape>
+                <shape id="body" type="text" topLeftX="210" topLeftY="210" width="180" height="40">
+                  <content fontSize="14"><p>短文本</p></content>
+                </shape>
+              </data>
+            </slide>
+            """
+        )
+        codes = [issue["code"] for issue in result["slides"][0]["issues"]]
+        self.assertNotIn("text_overflows_container", codes)
+
+    def test_lint_xml_reports_free_text_shape_overlapping_table_grid(self) -> None:
+        # A free-floating text shape whose glyph box lands on top of a sibling table occludes the cell
+        # contents (slides p4). The table renders its own text; a stray shape over the grid is an
+        # accidental overlay, so it must surface as table_covers_text (Bucket B).
+        result = xml_text_overlap_lint.lint_xml(
+            """
+            <presentation xmlns="http://www.larkoffice.com/sml/2.0" width="960" height="540">
+              <slide xmlns="http://www.larkoffice.com/sml/2.0">
+                <data>
+                  <table id="grid" topLeftX="200" topLeftY="200" width="400" height="150">
+                    <tr><td><content><p>A</p></content></td></tr>
+                  </table>
+                  <shape id="stray" type="text" topLeftX="260" topLeftY="240" width="120" height="30">
+                    <content fontSize="16"><p>覆盖表格</p></content>
+                  </shape>
+                </data>
+              </slide>
+            </presentation>
+            """
+        )
+        occlusions = [
+            issue for issue in result["slides"][0]["errors"]
+            if issue["code"] == "table_covers_text" and set(issue["elements"]) == {"grid", "stray"}
+        ]
+        self.assertEqual(len(occlusions), 1)
+
+    def test_lint_xml_ignores_table_with_only_cell_text(self) -> None:
+        # Cell text is part of the table's own layout and is never extracted as a standalone shape, so
+        # a table alone must not self-report table_covers_text (guards against a runaway detector).
+        result = xml_text_overlap_lint.lint_xml(
+            """
+            <presentation xmlns="http://www.larkoffice.com/sml/2.0" width="960" height="540">
+              <slide xmlns="http://www.larkoffice.com/sml/2.0">
+                <data>
+                  <table id="solo" topLeftX="200" topLeftY="200" width="400" height="150">
+                    <tr><td><content><p>Score</p></content></td></tr>
+                  </table>
+                </data>
+              </slide>
+            </presentation>
+            """
+        )
+        codes = [issue["code"] for issue in result["slides"][0]["issues"]]
+        self.assertNotIn("table_covers_text", codes)
+
+    def test_lint_xml_reports_free_text_shape_overlapping_chart(self) -> None:
+        # A free-floating text shape whose glyph box lands on top of a sibling chart occludes the chart's
+        # generated labels and legend (slides p5: a headline dropped onto a pie chart's ring). The chart
+        # renders its own text; a stray shape over the plot area is an accidental overlay, so it must
+        # surface as chart_covers_text (Bucket B3).
+        result = xml_text_overlap_lint.lint_xml(
+            """
+            <presentation xmlns="http://www.larkoffice.com/sml/2.0" width="960" height="540">
+              <slide xmlns="http://www.larkoffice.com/sml/2.0">
+                <data>
+                  <chart id="pie" topLeftX="200" topLeftY="60" width="420" height="420">
+                    <chartData><dim1><chartField name="p">A,B</chartField></dim1></chartData>
+                  </chart>
+                  <shape id="stray" type="text" topLeftX="360" topLeftY="120" width="120" height="40">
+                    <content fontSize="32"><p>abc 99%</p></content>
+                  </shape>
+                </data>
+              </slide>
+            </presentation>
+            """
+        )
+        occlusions = [
+            issue for issue in result["slides"][0]["errors"]
+            if issue["code"] == "chart_covers_text" and set(issue["elements"]) == {"pie", "stray"}
+        ]
+        self.assertEqual(len(occlusions), 1)
+
+    def test_lint_xml_ignores_chart_not_overlapping_text(self) -> None:
+        # A chart and a text shape that sit side by side without their glyph boxes touching must not
+        # report chart_covers_text (guards the detector from firing on mere co-existence).
+        result = xml_text_overlap_lint.lint_xml(
+            """
+            <presentation xmlns="http://www.larkoffice.com/sml/2.0" width="960" height="540">
+              <slide xmlns="http://www.larkoffice.com/sml/2.0">
+                <data>
+                  <chart id="pie" topLeftX="40" topLeftY="60" width="300" height="300">
+                    <chartData><dim1><chartField name="p">A,B</chartField></dim1></chartData>
+                  </chart>
+                  <shape id="caption" type="text" topLeftX="600" topLeftY="80" width="200" height="40">
+                    <content fontSize="16"><p>Sales breakdown</p></content>
+                  </shape>
+                </data>
+              </slide>
+            </presentation>
+            """
+        )
+        codes = [issue["code"] for issue in result["slides"][0]["issues"]]
+        self.assertNotIn("chart_covers_text", codes)
+
+    def test_lint_xml_reports_auto_fit_title_growing_onto_body_below(self) -> None:
+        # A shape-auto-fit title sized for one line wraps to two, growing downward past its authored box
+        # onto the body text beneath it (slides p9). shape-auto-fit only means the box grows to fit, so
+        # the grown glyph height -- not the authored height -- is what collides. The body is a tall
+        # multi-line block so the overlap covers <30% of it: the generic text-text check cannot catch
+        # this, only the dedicated auto-fit growth detector can (Bucket A3 / auto-fit growth).
+        result = xml_text_overlap_lint.lint_xml(
+            """
+            <slide xmlns="http://www.larkoffice.com/sml/2.0">
+              <data>
+                <shape id="title" type="text" topLeftX="80" topLeftY="20" width="480" height="36">
+                  <content fontSize="24" autoFit="shape-auto-fit"><p>02. | Literature Review - International Research</p></content>
+                </shape>
+                <shape id="body" type="text" topLeftX="80" topLeftY="60" width="480" height="200">
+                  <content fontSize="15" verticalAlign="top"><p>1. Marxist Perspective</p><p>Line two of body copy</p><p>Line three of body copy</p><p>Line four of body copy</p><p>Line five of body copy</p><p>Line six of body copy</p></content>
+                </shape>
+              </data>
+            </slide>
+            """
+        )
+        collisions = [
+            issue for issue in result["slides"][0]["errors"]
+            if issue["code"] == "bbox_overlap" and set(issue["elements"]) == {"title", "body"}
+        ]
+        self.assertEqual(len(collisions), 1)
+
+    def test_lint_xml_ignores_auto_fit_title_with_space_below(self) -> None:
+        # An identical wrapping auto-fit title with an empty gap below it grows harmlessly; the check
+        # must stay silent so ordinary auto-fit growth is not flagged (guards the grown-region area gate).
+        result = xml_text_overlap_lint.lint_xml(
+            """
+            <slide xmlns="http://www.larkoffice.com/sml/2.0">
+              <data>
+                <shape id="title" type="text" topLeftX="80" topLeftY="20" width="480" height="36">
+                  <content fontSize="24" autoFit="shape-auto-fit"><p>02. | Literature Review - International Research</p></content>
+                </shape>
+                <shape id="body" type="text" topLeftX="80" topLeftY="300" width="480" height="200">
+                  <content fontSize="15"><p>1. Marxist Perspective</p></content>
+                </shape>
+              </data>
+            </slide>
+            """
+        )
+        collisions = [
+            issue for issue in result["slides"][0]["issues"]
+            if issue["code"] == "bbox_overlap" and set(issue["elements"]) == {"title", "body"}
+        ]
+        self.assertEqual(collisions, [])
+
+    def test_lint_xml_does_not_treat_divider_rule_as_text_background_container(self) -> None:
+        # A thin horizontal rule under a title is a divider, not a container. Owning a title's grown
+        # glyph box to a 3px rule and reporting it as text_overflows_container is a false positive
+        # (slides p9); the line-like guard must keep the divider out of the container candidate set.
+        result = xml_text_overlap_lint.lint_xml(
+            """
+            <slide xmlns="http://www.larkoffice.com/sml/2.0">
+              <data>
+                <shape id="rule" type="rect" topLeftX="40" topLeftY="60" width="880" height="3">
+                  <fill><fillColor color="rgba(40,60,120,1)"/></fill>
+                </shape>
+                <shape id="title" type="text" topLeftX="80" topLeftY="20" width="480" height="36">
+                  <content fontSize="24" autoFit="shape-auto-fit"><p>02. | Literature Review - International Research</p></content>
+                </shape>
+              </data>
+            </slide>
+            """
+        )
+        container_hits = [
+            issue for issue in result["slides"][0]["issues"]
+            if issue["code"] == "text_overflows_container" and "rule" in issue["elements"]
+        ]
+        self.assertEqual(container_hits, [])
+
+
     def test_lint_xml_keeps_resolved_table_sizes_positive_when_target_is_too_small(self) -> None:
         result = xml_text_overlap_lint.lint_xml(
             """
@@ -2540,6 +2917,63 @@ class XmlTextOverlapLintGeometryTest(unittest.TestCase):
         self.assertEqual(issue["elements"], ["image", "text"])
         self.assertIn("no longer overlaps the text glyph area", issue["hint"])
         self.assertEqual(result["summary"]["error_count"], 1)
+
+    def test_lint_xml_exempts_full_canvas_background_image_behind_text(self) -> None:
+        # A full-bleed image at the bottom of the z-order is the slide backdrop; text rendered on top of
+        # it is never occluded (slides p9: bBo fills the whole canvas under the content). It must not be
+        # reported as image_covers_text (Bucket B5 background-image false positive).
+        result = xml_text_overlap_lint.lint_xml(
+            """
+            <presentation xmlns="http://www.larkoffice.com/sml/2.0" width="960" height="540">
+              <slide xmlns="http://www.larkoffice.com/sml/2.0"><data>
+                <img id="backdrop" src="token" topLeftX="0" topLeftY="0" width="960" height="540"/>
+                <shape id="text" type="text" topLeftX="100" topLeftY="100" width="400" height="60">
+                  <content fontSize="28"><p>On the backdrop</p></content>
+                </shape>
+              </data></slide>
+            </presentation>
+            """
+        )
+        codes = [
+            issue for issue in result["slides"][0]["issues"]
+            if issue["code"] == "image_covers_text" and "backdrop" in issue["elements"]
+        ]
+        self.assertEqual(codes, [])
+
+    def test_lint_xml_reports_full_canvas_image_drawn_above_text(self) -> None:
+        # The exemption is z-order aware: a full-canvas image drawn *after* (above) the text really does
+        # cover it, so it must still be flagged. Guards the backdrop exemption from swallowing real
+        # occlusions where the image is on top.
+        result = xml_text_overlap_lint.lint_xml(
+            """
+            <presentation xmlns="http://www.larkoffice.com/sml/2.0" width="960" height="540">
+              <slide xmlns="http://www.larkoffice.com/sml/2.0"><data>
+                <shape id="text" type="text" topLeftX="100" topLeftY="100" width="400" height="60">
+                  <content fontSize="28"><p>Under the cover</p></content>
+                </shape>
+                <img id="cover" src="token" topLeftX="0" topLeftY="0" width="960" height="540"/>
+              </data></slide>
+            </presentation>
+            """
+        )
+        codes = [
+            issue for issue in result["slides"][0]["issues"]
+            if issue["code"] == "image_covers_text" and set(issue["elements"]) == {"cover", "text"}
+        ]
+        self.assertEqual(len(codes), 1)
+
+    def test_stacking_helpers_agree_on_paint_order(self) -> None:
+        lower = {"order": 1}
+        upper = {"order": 3}
+        same = {"order": 3}
+        # is_drawn_behind and is_drawn_in_front_of are strict and mutually exclusive inverses.
+        self.assertTrue(xml_text_overlap_lint.is_drawn_behind(lower, upper))
+        self.assertFalse(xml_text_overlap_lint.is_drawn_in_front_of(lower, upper))
+        self.assertTrue(xml_text_overlap_lint.is_drawn_in_front_of(upper, lower))
+        self.assertFalse(xml_text_overlap_lint.is_drawn_behind(upper, lower))
+        # Equal order is neither behind nor in front, so an equal-order sibling never occludes.
+        self.assertFalse(xml_text_overlap_lint.is_drawn_behind(same, upper))
+        self.assertFalse(xml_text_overlap_lint.is_drawn_in_front_of(same, upper))
 
 
 class XmlTextOverlapLintDensityTest(unittest.TestCase):

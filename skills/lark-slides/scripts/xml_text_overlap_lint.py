@@ -65,6 +65,33 @@ TEXT_WIDTH_WRAP_RISK_RATIO = 0.85
 # Only short single-line labels/metrics are candidates for the width-wrap rule; longer runs are
 # prose meant to wrap. 16 matches is_short_metric_text's compact-length cap.
 SHORT_LABEL_WRAP_MAX_CHARS = 16
+# "%" is classified half-width by Unicode (Na) but its glyph advance is close to an em in common UI
+# fonts (Arial 0.889, PingFang ~0.85). Measuring it at the generic punct coefficient under-reports
+# every percentage metric and hides real wraps/overflows (slides p3: bhU).
+PERCENT_SIGN_WIDTH_RATIO = 0.85
+# A repeated-text pair is only treated as an intentional shadow/duplicate overlay (and suppressed)
+# when their glyph boxes are at least this coincident. Below it, two separately-placed labels that
+# merely share the same text are a genuine collision and must still be reported.
+SIMILAR_OVERLAY_COINCIDENCE_RATIO = 0.85
+# A text glyph box that pokes past its background container by more than this many pixels has
+# outgrown the box the author sized for it. A few pixels of slack absorbs glyph-width estimation
+# jitter so tightly-fitted text is not falsely reported.
+CONTAINER_OVERFLOW_MIN_PX = 4.0
+# Two text runs whose rotations differ by more than this (modulo 180) read in different directions;
+# a collision between them clips only a corner, so the ratio-based overlap test does not apply.
+PARALLEL_TEXT_ROTATION_TOLERANCE_DEG = 5.0
+# For non-parallel (rotated) text collisions the overlap ratio is tiny even for a real crossing, so we
+# flag on absolute overlapped area instead. ~60px^2 is roughly one CJK glyph's footprint at body size,
+# above float jitter yet below a genuine crossing.
+NON_PARALLEL_TEXT_OVERLAP_MIN_AREA = 60.0
+# A shape whose shorter side is at most this many pixels is a rule/divider/hairline, not a box that
+# can contain text (real cards/pills on these decks are >= 40px on their short side). Used to keep the
+# container-overflow check from adopting a divider as a text's background (slides p9).
+LINE_LIKE_SHAPE_MAX_THICKNESS_PX = 8.0
+# An image covering at least this fraction of the canvas is a full-bleed backdrop. When it also sits
+# behind the text in z-order it cannot occlude that text, so it is exempt from image_covers_text
+# (slides p9: bBo fills 960x540 at the bottom of the stack). A partial-bleed photo stays in scope.
+FULL_CANVAS_BACKGROUND_COVERAGE_RATIO = 0.95
 DENSE_BODY_LINE_SPACING_MAX_MULTIPLE = 1.6
 GHOST_TEXT_MIN_FONT_SIZE = 96
 GHOST_TEXT_MAX_ALPHA = 0.5
@@ -921,7 +948,222 @@ def is_vertical_text(element: dict[str, Any]) -> bool:
     return element.get("vert") in {"vert", "vert270", "word-art-vert", "word-art-vert-rtl", "ea-vert"}
 
 
-def detect_image_text_occlusions(elements: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def detect_table_text_occlusions(elements: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Flag text glyphs that land on top of (or under) a table's cell grid.
+
+    Mirrors detect_image_text_occlusions but for <table>. A free-floating text run whose glyph box
+    intersects a sibling table is almost always an accidental overlay -- the table already renders its
+    own cell text, so an unrelated shape sitting over the grid occludes it (slides p4). Text that is a
+    table cell child is part of the table's own layout and never extracted as a standalone element, so
+    this only ever sees sibling shapes. z-order is intentionally ignored: whether the text sits above
+    or below the grid, the two sets of glyphs collide in the same pixels.
+    """
+    issues: list[dict[str, Any]] = []
+    text_elements = [
+        element
+        for element in elements
+        if is_text_element(element) and has_text_content(element) and not is_ghost_text(element)
+    ]
+    tables = [element for element in elements if element["kind"] == "table" and element["alpha"] > 0]
+    for text_element in text_elements:
+        if is_decorative_text(text_element):
+            continue
+        glyph_bbox = estimate_text_visual_bbox(text_element)
+        if glyph_bbox is None:
+            continue
+        for table in tables:
+            if not intersects(table, glyph_bbox):
+                continue
+            issues.append({
+                "level": "error",
+                "code": "table_covers_text",
+                "elements": [table["id"], text_element["id"]],
+                "message": f'text shape {text_element["id"]} overlaps table {table["id"]}',
+                "hint": "Move the text shape off the table grid or into a table cell; a free shape on top of the grid occludes the cell contents.",
+            })
+    return issues
+
+
+def detect_chart_text_occlusions(elements: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Flag text glyphs that land on top of (or under) a chart's plot area.
+
+    Mirrors detect_table_text_occlusions but for <chart> (slides p5: a pie/donut chart bqP with the
+    headline "abc 99%" and a caption "图表遮挡" dropped onto its ring). A chart draws its own axis
+    labels, legend and data labels, so an unrelated text shape sitting over the plot box collides with
+    that generated content. z-order is intentionally ignored -- whether the text is above or below the
+    chart, the glyphs share the same pixels. Text that is chart-internal (titles, data labels) lives
+    inside the <chart> node and is never extracted as a standalone element, so this only ever sees
+    sibling shapes.
+    """
+    issues: list[dict[str, Any]] = []
+    text_elements = [
+        element
+        for element in elements
+        if is_text_element(element) and has_text_content(element) and not is_ghost_text(element)
+    ]
+    charts = [element for element in elements if element["kind"] == "chart" and element["alpha"] > 0]
+    for text_element in text_elements:
+        if is_decorative_text(text_element):
+            continue
+        glyph_bbox = estimate_text_visual_bbox(text_element)
+        if glyph_bbox is None:
+            continue
+        for chart in charts:
+            if not intersects(chart, glyph_bbox):
+                continue
+            issues.append({
+                "level": "error",
+                "code": "chart_covers_text",
+                "elements": [chart["id"], text_element["id"]],
+                "message": f'text shape {text_element["id"]} overlaps chart {chart["id"]}',
+                "hint": "Move the text shape off the chart plot area; a free shape on top of the chart occludes its axis labels, legend, and data labels.",
+            })
+    return issues
+
+
+def is_line_like_shape(element: dict[str, Any]) -> bool:
+    """True for divider rules and hairlines -- shapes too thin on one axis to contain text.
+
+    A background container encloses its text; a horizontal/vertical rule merely underlines or
+    separates it. Owning text to a 3px-tall rule and then reporting it as an overflowing container
+    is a false positive (slides p9, where a title's grown glyph box grazes the section divider).
+    """
+    return min(element["width"], element["height"]) <= LINE_LIKE_SHAPE_MAX_THICKNESS_PX
+
+
+def detect_auto_fit_growth_collisions(elements: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Flag shape-auto-fit text that grew past its authored box into content below it.
+
+    shape-auto-fit grows a text box downward to fit wrapped lines, so growth by itself is benign --
+    but only when the space below is empty. When a title wraps to more lines than the author sized
+    for and the grown-below region lands on the text following it, the two collide on the rendered
+    slide (slides p9: the section title wraps and overlaps the body beneath it). The plain text-text
+    overlap check misses this because the collision covers well under 30% of the tall body box; here
+    we measure only the grown region against each sibling text run, so any real intrusion is caught.
+    We compare against text only: a title growing over a background image or panel is what auto-fit is
+    for, whereas growing onto neighbouring copy is the layout break.
+    """
+    issues: list[dict[str, Any]] = []
+    for element in elements:
+        if not is_text_element(element) or not has_text_content(element):
+            continue
+        if element.get("autoFit") != "shape-auto-fit":
+            continue
+        if is_ghost_text(element) or is_decorative_text(element):
+            continue
+        glyph = estimate_text_visual_bbox(element)
+        if glyph is None:
+            continue
+        authored_bottom = element["y"] + element["height"]
+        grown_bottom = glyph["y"] + glyph["height"]
+        growth = grown_bottom - authored_bottom
+        if growth <= CONTAINER_OVERFLOW_MIN_PX:
+            continue
+        grown_region = {"x": glyph["x"], "y": authored_bottom, "width": glyph["width"], "height": growth}
+        for other in elements:
+            if other["id"] == element["id"]:
+                continue
+            if not is_text_element(other) or not has_text_content(other):
+                continue
+            if is_ghost_text(other) or is_decorative_text(other):
+                continue
+            other_bbox = estimate_text_visual_bbox(other)
+            if other_bbox is None:
+                continue
+            if intersection_area(grown_region, other_bbox) <= CONTAINER_OVERFLOW_MIN_PX:
+                continue
+            issues.append({
+                "level": "error",
+                "code": "bbox_overlap",
+                "elements": [element["id"], other["id"]],
+                "message": (
+                    f'auto-fit text {element["id"]} grew {growth:g}px past its box and overlaps {other["id"]}'
+                ),
+                "hint": "The shape-auto-fit text wrapped to more lines than its box allows; widen the box, shorten the text, or move the element below it down.",
+            })
+    return issues
+
+
+def detect_text_container_overflow(elements: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Flag text whose glyph box spills past the background shape acting as its container.
+
+    A non-text shape drawn behind a text run (lower z-order) that overlaps it is a candidate
+    background container -- a card, pill, or panel. Each text is owned by the candidate it overlaps
+    most (largest glyph-box intersection); when sibling cards partially overlap, this picks the card
+    the text actually sits in rather than a neighbour that merely clips its tail. We then report only
+    if the glyphs spill past that owning container's edges (slides p7). Ghost/decorative text is
+    ignored, and text that fits entirely inside its owner produces nothing.
+    """
+    issues: list[dict[str, Any]] = []
+    containers = [
+        element
+        for element in elements
+        if element["kind"] == "shape"
+        and not is_text_element(element)
+        and is_visually_rendered(element)
+        and not is_line_like_shape(element)
+    ]
+    tol = CONTAINER_OVERFLOW_MIN_PX
+    for text_element in elements:
+        if not is_text_element(text_element) or not has_text_content(text_element):
+            continue
+        if is_ghost_text(text_element) or is_decorative_text(text_element):
+            continue
+        glyph = estimate_text_visual_bbox(text_element)
+        if glyph is None:
+            continue
+        # Own the text to the behind-in-z-order shape it overlaps most; that is the box sized for it.
+        candidates = [c for c in containers if is_drawn_behind(c, text_element)]
+        owner = max(
+            (c for c in candidates if intersection_area(c, glyph) > 0),
+            key=lambda c: intersection_area(c, glyph),
+            default=None,
+        )
+        if owner is None:
+            continue
+        overflow = {
+            "left": round(max(owner["x"] - glyph["x"], 0), 3),
+            "top": round(max(owner["y"] - glyph["y"], 0), 3),
+            "right": round(max((glyph["x"] + glyph["width"]) - (owner["x"] + owner["width"]), 0), 3),
+            "bottom": round(max((glyph["y"] + glyph["height"]) - (owner["y"] + owner["height"]), 0), 3),
+        }
+        if not any(value > tol for value in overflow.values()):
+            continue
+        issues.append({
+            "level": "error",
+            "code": "text_overflows_container",
+            "elements": [text_element["id"], owner["id"]],
+            "overflow": overflow,
+            "message": (
+                f'text shape {text_element["id"]} overflows its background container {owner["id"]}'
+            ),
+            "hint": "Enlarge the container shape, shrink the text, or reduce the text so the glyphs stay inside the box.",
+        })
+    return issues
+
+
+def is_full_canvas_background_image(
+    image: dict[str, Any], slide_width: int | float, slide_height: int | float
+) -> bool:
+    """True for a full-bleed image drawn behind the content as the slide backdrop.
+
+    A background photo/gradient that fills the canvas sits under every text run by design, so text
+    rendered on top of it is never occluded (slides p9: bBo covers 0,0..960,540 at the bottom of the
+    z-order). We treat an image as a backdrop when it covers essentially the whole canvas; z-order is
+    checked per text pair at the call site so a full-canvas image sitting *above* a text run is still
+    reported.
+    """
+    canvas_area = slide_width * slide_height
+    if canvas_area <= 0:
+        return False
+    canvas = {"x": 0, "y": 0, "width": slide_width, "height": slide_height}
+    covered = intersection_area(image, canvas)
+    return covered / canvas_area >= FULL_CANVAS_BACKGROUND_COVERAGE_RATIO
+
+
+def detect_image_text_occlusions(
+    elements: list[dict[str, Any]], slide_width: int | float = 960, slide_height: int | float = 540
+) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     text_elements = [
         element
@@ -931,6 +1173,13 @@ def detect_image_text_occlusions(elements: list[dict[str, Any]]) -> list[dict[st
     image_elements = [element for element in elements if element["kind"] == "img" and element["alpha"] > 0]
     for text_element in text_elements:
         for image_element in image_elements:
+            # A full-canvas image drawn behind the text is the slide backdrop, not an occluder; text on
+            # top of it renders cleanly (slides p9). An image that fills the canvas but sits *above* the
+            # text still occludes, so this only exempts the behind-in-z-order case.
+            if is_drawn_behind(image_element, text_element) and is_full_canvas_background_image(
+                image_element, slide_width, slide_height
+            ):
+                continue
             if is_vertical_text(text_element):
                 if intersects(image_element, text_element):
                     issues.append({
@@ -997,13 +1246,23 @@ def estimate_character_width(
     font_size: int | float,
     bold: bool = False,
     font_family: str | None = None,
+    east_asian_context: bool = False,
 ) -> int | float:
     bold_multiplier = 1.05 if bold else 1.0
     if character.isspace():
         return font_size * 0.33 * bold_multiplier
     ea_width = unicodedata.east_asian_width(character)
-    if ea_width in {"F", "W"}:
+    # Ambiguous-width glyphs (em/en-dash, middle-dot, ellipsis) render full-width inside a CJK run and
+    # half-width in a Latin run (UAX #11). Measuring "—— 李白" with narrow dashes under-reports the line
+    # and hides a real wrap in a tight author-credit box (slides p1: bMW). Promote them to full-width
+    # only when the surrounding run has East Asian context so "2020–2023" stays narrow.
+    if ea_width in {"F", "W"} or (ea_width == "A" and east_asian_context):
         return font_size * bold_multiplier
+    # "%" is half-width by Unicode class (Na) but renders nearly full-width (~0.85em in Arial/PingFang):
+    # the generic punct coefficient under-measures every percentage metric, so a "Docs 99%Docs 99%..."
+    # run wraps to more lines than estimated and its overflow is missed (slides p3: bhU).
+    if character == "%":
+        return font_size * PERCENT_SIGN_WIDTH_RATIO * bold_multiplier
     category = classify_font_family(font_family)
     coeffs = _FONT_CATEGORY_MULTIPLIERS[category]
     if character.isupper():
@@ -1021,8 +1280,17 @@ def estimate_text_width(
     letter_spacing: int | float = 0,
     bold: bool = False,
     font_family: str | None = None,
+    east_asian_context: bool | None = None,
 ) -> int | float:
-    base = sum(estimate_character_width(character, font_size, bold, font_family) for character in text)
+    # A run counts as East Asian context when it contains any CJK-like glyph; in that setting ambiguous
+    # dashes/dots render full-width. Callers measuring a single wrap token (count_wrapped_lines) pass the
+    # whole-line context explicitly so a lone dash token is still measured as full-width.
+    if east_asian_context is None:
+        east_asian_context = any(is_cjk_char(character) for character in text)
+    base = sum(
+        estimate_character_width(character, font_size, bold, font_family, east_asian_context)
+        for character in text
+    )
     return base + max(len(text) - 1, 0) * letter_spacing
 
 
@@ -1088,9 +1356,12 @@ def count_wrapped_lines(
         return 1
     lines = 1
     current = 0.0
+    # Ambiguous glyphs render full-width in a CJK line; decide context from the whole line, not the lone
+    # token, so a dash token split off from "—— 李白" is still measured full-width (matches Skia wrapping).
+    east_asian_context = any(is_cjk_char(character) for character in text)
 
     def token_width(token: str) -> int | float:
-        return estimate_text_width(token, font_size, letter_spacing, bold, font_family)
+        return estimate_text_width(token, font_size, letter_spacing, bold, font_family, east_asian_context)
 
     for kind, token in tokens:
         width = token_width(token)
@@ -1194,13 +1465,37 @@ def estimate_text_max_line_width(element: dict[str, Any]) -> int | float:
 
 
 def is_similar_text_overlay(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    """True for a shadow/duplicate text stack that is meant to sit on top of itself.
+
+    Repeated text is only an intentional overlay when the two runs are nearly coincident -- e.g. a
+    drop-shadow copy offset by a pixel or two. Two distinct labels that happen to carry the same text
+    but sit at different positions (slides p6: identical "文字碰撞" runs collided by rotation) are a
+    real overlap, so we require both a text match AND near-coincident glyph boxes before suppressing.
+    """
     left_text = normalize_text_for_overlap(left.get("text") or "")
     right_text = normalize_text_for_overlap(right.get("text") or "")
     if not left_text or not right_text:
         return False
-    if left_text == right_text or left_text in right_text or right_text in left_text:
+    text_matches = (
+        left_text == right_text
+        or left_text in right_text
+        or right_text in left_text
+        or SequenceMatcher(None, left_text, right_text).ratio() >= 0.75
+    )
+    if not text_matches:
+        return False
+    left_visual = estimate_text_visual_bbox(left)
+    right_visual = estimate_text_visual_bbox(right)
+    if left_visual is None or right_visual is None:
         return True
-    return SequenceMatcher(None, left_text, right_text).ratio() >= 0.75
+    overlap = intersection_area(left_visual, right_visual)
+    smaller_area = min(
+        left_visual["width"] * left_visual["height"],
+        right_visual["width"] * right_visual["height"],
+    )
+    # A genuine shadow/duplicate overlay is almost fully coincident; a mere text coincidence between
+    # two separately-placed labels leaves a large non-overlapping remainder and must not be suppressed.
+    return smaller_area > 0 and overlap / smaller_area >= SIMILAR_OVERLAY_COINCIDENCE_RATIO
 
 
 def estimate_text_line_count_for_text(
@@ -1260,6 +1555,59 @@ def adjust_dense_body_line_height(
     return min(line_height, font_size * min(float(match.group(1)), DENSE_BODY_LINE_SPACING_MAX_MULTIPLE))
 
 
+def estimate_text_block_height(element: dict[str, Any]) -> dict[str, Any] | None:
+    """Estimate the rendered height of a text run using its real line spacing.
+
+    Returns ``{"line_count", "estimated_height", "line_heights"}`` or ``None`` when the
+    line spacing cannot be parsed. Shared by the height-overflow check and the visual
+    glyph-box estimator so both honour ``lineSpacing`` (multiple/fixed, per-paragraph
+    overrides) instead of a flat ``font_size * 1.2`` -- the latter under-reports multi-line
+    poems and let <line> crossings escape (slides p8/p10).
+    """
+    if not is_text_element(element) or not has_text_content(element):
+        return None
+    font_size = element["fontSize"] if isinstance(element["fontSize"], (int, float)) else 16
+    paragraphs = element.get("paragraphs") or [
+        {
+            "text": element["text"],
+            "lineSpacing": None,
+            "beforeLineSpacing": None,
+            "afterLineSpacing": None,
+        }
+    ]
+    line_count = 0
+    estimated_height = 0.0
+    line_heights: list[int | float] = []
+    for paragraph in paragraphs:
+        paragraph_line_count = estimate_text_line_count_for_text(element, paragraph["text"], paragraph)
+        if paragraph_line_count == 0:
+            continue
+        resolved_line_spacing = paragraph["lineSpacing"] or element["lineSpacing"]
+        line_height = estimate_text_line_height(element, resolved_line_spacing)
+        before_spacing = estimate_text_line_height(
+            element, paragraph["beforeLineSpacing"] or element["beforeLineSpacing"] or "fixed:0"
+        )
+        after_spacing = estimate_text_line_height(
+            element, paragraph["afterLineSpacing"] or element["afterLineSpacing"] or "fixed:0"
+        )
+        if line_height is None or before_spacing is None or after_spacing is None:
+            return None
+        line_height = adjust_dense_body_line_height(element, resolved_line_spacing, line_height, len(paragraphs))
+        first_line_height = font_size if line_count == 0 else line_height
+        line_count += paragraph_line_count
+        line_heights.append(line_height)
+        estimated_height += (
+            before_spacing + first_line_height + max(paragraph_line_count - 1, 0) * line_height + after_spacing
+        )
+    if line_count == 0:
+        return None
+    return {
+        "line_count": line_count,
+        "estimated_height": estimated_height,
+        "line_heights": line_heights,
+    }
+
+
 def detect_text_may_overflow_shapes(elements: list[dict[str, Any]]) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     for element in elements:
@@ -1268,42 +1616,12 @@ def detect_text_may_overflow_shapes(elements: list[dict[str, Any]]) -> list[dict
         if has_explicit_height_auto_fit(element):
             continue
 
-        font_size = element["fontSize"] if isinstance(element["fontSize"], (int, float)) else 16
-        paragraphs = element.get("paragraphs") or [
-            {
-                "text": element["text"],
-                "lineSpacing": None,
-                "beforeLineSpacing": None,
-                "afterLineSpacing": None,
-            }
-        ]
-        line_count = 0
-        estimated_height = 0.0
-        line_heights: list[int | float] = []
-        for paragraph in paragraphs:
-            paragraph_line_count = estimate_text_line_count_for_text(element, paragraph["text"], paragraph)
-            if paragraph_line_count == 0:
-                continue
-            resolved_line_spacing = paragraph["lineSpacing"] or element["lineSpacing"]
-            line_height = estimate_text_line_height(element, resolved_line_spacing)
-            before_spacing = estimate_text_line_height(
-                element, paragraph["beforeLineSpacing"] or element["beforeLineSpacing"] or "fixed:0"
-            )
-            after_spacing = estimate_text_line_height(
-                element, paragraph["afterLineSpacing"] or element["afterLineSpacing"] or "fixed:0"
-            )
-            if line_height is None or before_spacing is None or after_spacing is None:
-                line_count = 0
-                break
-            line_height = adjust_dense_body_line_height(element, resolved_line_spacing, line_height, len(paragraphs))
-            first_line_height = font_size if line_count == 0 else line_height
-            line_count += paragraph_line_count
-            line_heights.append(line_height)
-            estimated_height += (
-                before_spacing + first_line_height + max(paragraph_line_count - 1, 0) * line_height + after_spacing
-            )
-        if line_count == 0:
+        block = estimate_text_block_height(element)
+        if block is None:
             continue
+        line_count = block["line_count"]
+        estimated_height = block["estimated_height"]
+        line_heights = block["line_heights"]
         available_height = max(element["height"] - element["paddingTop"] - element["paddingBottom"], 0)
         overflow = estimated_height - available_height
         if overflow <= text_height_overflow_tolerance():
@@ -1442,7 +1760,7 @@ def is_background_decorative_text(
         foreground_alpha = other.get("textAlpha", other.get("alpha", 1))
         if not isinstance(foreground_alpha, (int, float)) or foreground_alpha <= 0:
             continue
-        if other["order"] <= element["order"]:
+        if not is_drawn_in_front_of(other, element):
             continue
         if intersects(element, other):
             return True
@@ -1475,7 +1793,15 @@ def estimate_text_visual_bbox(element: dict[str, Any]) -> dict[str, int | float]
     line_count = estimate_text_line_count(element)
     estimated_width = max(1, estimate_text_max_line_width(element))
     visual_width = estimated_width if element.get("wrap") in {"false", "0"} else min(content_width, estimated_width)
-    visual_height = min(content_height, max(1, line_count * font_size * 1.2))
+    raw_height = max(1, line_count * font_size * 1.2)
+    # shape-auto-fit grows the box downward to fit its text, so the rendered glyphs occupy the full
+    # estimated block height even when it exceeds the authored box. Clamping to content_height here
+    # would hide a grown title colliding with whatever sits below it (slides p9). Every other autoFit
+    # mode keeps the authored box, so the estimate stays clamped.
+    if element.get("autoFit") == "shape-auto-fit":
+        visual_height = raw_height
+    else:
+        visual_height = min(content_height, raw_height)
     x = element["x"] + padding_left
     if element.get("textAlign") == "center":
         x += (content_width - visual_width) / 2
@@ -1486,12 +1812,49 @@ def estimate_text_visual_bbox(element: dict[str, Any]) -> dict[str, int | float]
         y += (content_height - visual_height) / 2
     elif element.get("verticalAlign") == "bottom":
         y += content_height - visual_height
-    return {
-        "x": x,
-        "y": y,
-        "width": visual_width,
-        "height": visual_height,
-    }
+    return rotate_bbox_around_element_center(
+        {"x": x, "y": y, "width": visual_width, "height": visual_height}, element
+    )
+
+
+def rotate_bbox_around_element_center(
+    bbox: dict[str, int | float], element: dict[str, Any]
+) -> dict[str, int | float]:
+    """Return the axis-aligned bounds of bbox after the element's rotation is applied.
+
+    Rotation spins the whole shape about its own centre, so a glyph box computed in the shape's local
+    (unrotated) frame must be rotated with it before any axis-aligned overlap test. Without this, a
+    text run rotated 90/270 keeps its horizontal footprint and its true vertical footprint is missed
+    entirely (slides p6). We rotate the four corners about the element centre and take their AABB:
+    exact for right-angle rotations and a conservative super-set for arbitrary angles, which suits the
+    zero-false-negative gate.
+    """
+    rotation = element.get("rotation", 0)
+    if not isinstance(rotation, (int, float)) or not math.isfinite(rotation):
+        return bbox
+    rotation %= 360
+    if math.isclose(rotation, 0, abs_tol=1e-9):
+        return bbox
+    cx = element["x"] + element["width"] / 2
+    cy = element["y"] + element["height"] / 2
+    radians = math.radians(rotation)
+    sine, cosine = math.sin(radians), math.cos(radians)
+    corners = [
+        (bbox["x"], bbox["y"]),
+        (bbox["x"] + bbox["width"], bbox["y"]),
+        (bbox["x"], bbox["y"] + bbox["height"]),
+        (bbox["x"] + bbox["width"], bbox["y"] + bbox["height"]),
+    ]
+    rotated = [
+        (
+            cx + (px - cx) * cosine - (py - cy) * sine,
+            cy + (px - cx) * sine + (py - cy) * cosine,
+        )
+        for px, py in corners
+    ]
+    xs = [point[0] for point in rotated]
+    ys = [point[1] for point in rotated]
+    return {"x": min(xs), "y": min(ys), "width": max(xs) - min(xs), "height": max(ys) - min(ys)}
 
 
 def intersection_area(left: dict[str, Any], right: dict[str, Any]) -> int | float:
@@ -1525,11 +1888,27 @@ def contains(outer: dict[str, Any], inner: dict[str, Any], tolerance: int | floa
     )
 
 
+def is_drawn_behind(element: dict[str, Any], reference: dict[str, Any]) -> bool:
+    """True when ``element`` sits lower in the stacking order than ``reference``.
+
+    ``order`` is the paint sequence assigned in extract_elements: lower paints first, so a lower
+    ``order`` renders underneath. Every stacking test funnels through this helper (and its inverse
+    is_drawn_in_front_of) so "behind" vs "in front" is decided in one place -- raw ``order`` compares
+    at each call site drifted between ``<`` and ``<=`` and inverted the meaning by accident.
+    """
+    return element["order"] < reference["order"]
+
+
+def is_drawn_in_front_of(element: dict[str, Any], reference: dict[str, Any]) -> bool:
+    """True when ``element`` paints on top of ``reference`` (strictly higher stacking order)."""
+    return element["order"] > reference["order"]
+
+
 def is_bottom_layer_full_slide_whiteboard(
     whiteboard: dict[str, Any], other: dict[str, Any], slide_width: int | float, slide_height: int | float
 ) -> bool:
     return (
-        whiteboard["order"] < other["order"]
+        is_drawn_behind(whiteboard, other)
         and whiteboard["x"] <= 2
         and whiteboard["y"] <= 2
         and whiteboard["width"] >= slide_width - 4
@@ -1538,7 +1917,7 @@ def is_bottom_layer_full_slide_whiteboard(
 
 
 def is_background_container_for_whiteboard(container: dict[str, Any], whiteboard: dict[str, Any]) -> bool:
-    if container["order"] > whiteboard["order"]:
+    if is_drawn_in_front_of(container, whiteboard):
         return False
     if is_text_element(container):
         return False
@@ -1646,8 +2025,24 @@ def should_flag_overlap(left: dict[str, Any], right: dict[str, Any]) -> bool:
             left_visual["width"] * left_visual["height"],
             right_visual["width"] * right_visual["height"],
         )
-        return smaller_area > 0 and overlap_area / smaller_area >= 0.30
+        if smaller_area <= 0:
+            return False
+        # The 30% ratio assumes two parallel stacked runs, where a real collision covers a big share of
+        # the smaller box. When the runs are not parallel (one is rotated relative to the other) even a
+        # full crossing only clips a corner, so the ratio stays tiny (slides p6: ~7%). For that case any
+        # non-trivial overlap area is a genuine collision, so fall back to an absolute-area test.
+        if not text_runs_are_parallel(left, right):
+            return overlap_area >= NON_PARALLEL_TEXT_OVERLAP_MIN_AREA
+        return overlap_area / smaller_area >= 0.30
     return False
+
+
+def text_runs_are_parallel(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    """True when two text runs share the same reading direction (rotation modulo 180 degrees)."""
+    left_rotation = left.get("rotation", 0) if isinstance(left.get("rotation", 0), (int, float)) else 0
+    right_rotation = right.get("rotation", 0) if isinstance(right.get("rotation", 0), (int, float)) else 0
+    delta = abs(left_rotation - right_rotation) % 180
+    return min(delta, 180 - delta) <= PARALLEL_TEXT_ROTATION_TOLERANCE_DEG
 
 
 def build_whiteboard_external_overlap_issue(
@@ -1939,6 +2334,39 @@ def erode_rect(rect: dict[str, int | float], margin: float) -> dict[str, int | f
     return {"x": rect["x"] + margin, "y": rect["y"] + margin, "width": width, "height": height}
 
 
+def estimate_text_crossing_bbox(element: dict[str, Any]) -> dict[str, int | float] | None:
+    """Glyph box for <line> crossing tests, using the real line-spacing vertical span.
+
+    estimate_text_visual_bbox approximates the vertical extent as line_count * font_size * 1.2,
+    which under-reports multi-line runs with lineSpacing > 1.2 (e.g. poems at multiple:1.6). A
+    horizontal separator sitting between two such lines then fell outside the box and the crossing
+    escaped (slides p8/p10). Here we widen only the height to the real leading span so the line-
+    crossing rule sees where glyphs actually sit; width/anchoring stay identical to the shared box.
+    """
+    glyph_bbox = estimate_text_visual_bbox(element)
+    if glyph_bbox is None:
+        return None
+    block = estimate_text_block_height(element)
+    if block is None:
+        return glyph_bbox
+    padding_top = element.get("paddingTop", 0)
+    padding_bottom = element.get("paddingBottom", 0)
+    content_height = max(element["height"] - padding_top - padding_bottom, 0)
+    spacing_height = min(content_height, max(1, block["estimated_height"]))
+    if spacing_height <= glyph_bbox["height"]:
+        return glyph_bbox
+    updated = dict(glyph_bbox)
+    # Re-anchor vertically the same way estimate_text_visual_bbox does, using the taller span.
+    y = element["y"] + padding_top
+    if element.get("verticalAlign") == "middle":
+        y += (content_height - spacing_height) / 2
+    elif element.get("verticalAlign") == "bottom":
+        y += content_height - spacing_height
+    updated["y"] = y
+    updated["height"] = spacing_height
+    return updated
+
+
 def line_crosses_text(line: dict[str, Any], text_element: dict[str, Any]) -> bool:
     if not is_visually_rendered(line) or line.get("alpha", 1) < LINE_MIN_VISIBLE_ALPHA:
         return False
@@ -1946,7 +2374,7 @@ def line_crosses_text(line: dict[str, Any], text_element: dict[str, Any]) -> boo
         return False
     if is_ghost_text(text_element) or is_decorative_text(text_element):
         return False
-    glyph_bbox = estimate_text_visual_bbox(text_element)
+    glyph_bbox = estimate_text_crossing_bbox(text_element)
     if glyph_bbox is None:
         return False
     # Erode the glyph box so a line skimming the letter edge or only clipping the padding-only text
@@ -1988,8 +2416,14 @@ def lint_slide(
 ) -> dict[str, Any]:
     elements = extract_elements(slide_xml)
     height_overflow_issues = detect_text_may_overflow_shapes(elements)
+    # Only an error-level height overflow should suppress the width-wrap error for the same element. A
+    # marginal height *warning* (e.g. a 2-line label that grazes its box by <1px once "%" is measured at
+    # full advance) must not mask a genuine width overflow on the same run (slides p3: bMP/bhd).
     height_overflow_ids = {
-        element_id for issue in height_overflow_issues for element_id in issue["elements"]
+        element_id
+        for issue in height_overflow_issues
+        if issue["level"] == "error"
+        for element_id in issue["elements"]
     }
     issues: list[dict[str, Any]] = [
         *detect_whiteboard_external_overlaps(elements, slide_width, slide_height),
@@ -1997,14 +2431,23 @@ def lint_slide(
         *detect_table_layout_size_mismatches(elements),
         *height_overflow_issues,
         *detect_text_may_wrap_shapes(elements, height_overflow_ids),
-        *detect_image_text_occlusions(elements),
+        *detect_image_text_occlusions(elements, slide_width, slide_height),
+        *detect_table_text_occlusions(elements),
+        *detect_chart_text_occlusions(elements),
+        *detect_text_container_overflow(elements),
+        *detect_auto_fit_growth_collisions(elements),
         *detect_line_text_crossings(slide_xml, elements),
     ]
 
     for index, left in enumerate(elements):
         for right in elements[index + 1 :]:
             horizontal_overflow = should_flag_horizontal_text_overflow(left, right)
-            if not horizontal_overflow and (not intersects(left, right) or not should_flag_overlap(left, right)):
+            # should_flag_overlap already returns False for non-text pairs and for glyph boxes that do
+            # not overlap, so the earlier raw-bbox intersects() guard was redundant for axis-aligned
+            # text (the glyph box is inside the element box) and wrong for rotated text (rotation
+            # expands the glyph box past a raw box that no longer intersects -- slides p6). Rely on
+            # should_flag_overlap's rotation-aware glyph geometry as the sole authority.
+            if not horizontal_overflow and not should_flag_overlap(left, right):
                 continue
             issues.append(
                 {
@@ -2025,8 +2468,47 @@ def lint_slide(
         "slide_number": slide_number,
         "element_count": len(elements),
         "elements": elements,
-        "issues": issues,
+        "issues": dedupe_bbox_overlap_issues(issues),
     }
+
+
+def dedupe_bbox_overlap_issues(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse duplicate bbox_overlap issues that name the same element pair.
+
+    The generic text-text loop and the specialised detectors (auto-fit growth, line crossings) can
+    each surface the same colliding pair. To an agent that is one defect, so we keep the first issue
+    for a given unordered {code, element-pair} and drop later repeats. Non-overlap codes are untouched.
+
+    text_may_overflow_shape is shared by the vertical (height) and horizontal (width) detectors: a run
+    can overflow on both axes (slides p3: bMP wraps two lines *and* is too wide), which to the user is
+    still one "text overflows its box" defect. We keep a single issue per element -- the highest
+    severity, so a marginal height warning never hides the width error for the same run.
+    """
+    _severity_rank = {"error": 2, "warning": 1, "info": 0}
+    best_overflow_level: dict[str, str] = {}
+    for issue in issues:
+        if issue.get("code") == "text_may_overflow_shape" and len(issue["elements"]) == 1:
+            element_id = issue["elements"][0]
+            current = best_overflow_level.get(element_id)
+            if current is None or _severity_rank[issue["level"]] > _severity_rank[current]:
+                best_overflow_level[element_id] = issue["level"]
+
+    seen: set[tuple[str, frozenset[str]]] = set()
+    kept_overflow: set[str] = set()
+    deduped: list[dict[str, Any]] = []
+    for issue in issues:
+        if issue.get("code") == "bbox_overlap":
+            key = (issue["code"], frozenset(issue["elements"]))
+            if key in seen:
+                continue
+            seen.add(key)
+        elif issue.get("code") == "text_may_overflow_shape" and len(issue["elements"]) == 1:
+            element_id = issue["elements"][0]
+            if element_id in kept_overflow or issue["level"] != best_overflow_level[element_id]:
+                continue
+            kept_overflow.add(element_id)
+        deduped.append(issue)
+    return deduped
 
 
 

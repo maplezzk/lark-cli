@@ -7,7 +7,9 @@
   },
   "scripts": {
     "postinstall": "node scripts/install.js",
-    "release:check": "node scripts/release-preflight.js"
+    "release:check": "node scripts/release-preflight.js",
+    "skills:generate": "node scripts/generate-umbrella-skill.mjs",
+    "skills:check": "node scripts/generate-umbrella-skill.mjs --check"
   },
   "os": [
     "darwin",

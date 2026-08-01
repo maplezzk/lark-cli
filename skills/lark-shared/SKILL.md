@@ -141,10 +141,10 @@ LARKSUITE_CLI_NO_UPDATE_NOTIFIER=1 LARKSUITE_CLI_NO_SKILLS_NOTIFIER=1 <lark-cli 
 当你在输出中看到 `_notice.update` 时，先完成用户当前请求；如仍相关，再简短告知可运行：
 
 ```bash
-lark-cli update
+LARKSUITE_CLI_NO_SKILLS_SYNC=1 lark-cli update
 ```
 
-**重要**：始终使用 `lark-cli update` 更新，它会同时更新 CLI 和 AI Skills。
+该命令保留版本检查和 binary 更新，但跳过官方独立 skills 同步。仅在明确需要恢复官方顶层 skill bundle 时运行 `lark-cli update --skip-skills=false`。
 
 ## JSON 输出契约
 

@@ -139,6 +139,14 @@ lark-cli auth status
 
 ## Agent Skills
 
+本 fork 同时提供单一、渐进披露的 `lark` umbrella skill。如不希望独立的 `lark-*` skills 安装到 agent 根目录，只安装这个入口：
+
+```bash
+npx skills add maplezzk/lark-cli --skill lark -g -y
+```
+
+umbrella 由本仓库的 `skills/lark-*` 源通过 `npm run skills:generate` 生成；`npm run skills:check` 用于验证领域指南是否为最新产物。
+
 | Skill                           | 说明                                        |
 | --------------------------------- |-------------------------------------------|
 | `lark-shared`                   | 应用配置、认证登录、身份切换、权限管理、安全规则（所有其他 skill 自动加载） |

@@ -138,6 +138,14 @@ lark-cli auth status
 
 ## Agent Skills
 
+This fork also ships a single progressive-disclosure `lark` umbrella skill. Install only that entrypoint when you do not want the standalone `lark-*` skills added at the agent root:
+
+```bash
+npx skills add maplezzk/lark-cli --skill lark -g -y
+```
+
+The umbrella is generated from this repository's `skills/lark-*` sources with `npm run skills:generate`; `npm run skills:check` verifies that the bundled guides are current.
+
 | Skill                           | Description                                                                                                    |
 | ------------------------------- |----------------------------------------------------------------------------------------------------------------|
 | `lark-shared`                   | App config, auth login, identity switching, scope management, security rules (auto-loaded by all other skills) |

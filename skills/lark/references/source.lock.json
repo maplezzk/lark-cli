@@ -30,8 +30,8 @@
     "lark-workflow-meeting-summary",
     "lark-workflow-standup-report"
   ],
-  "sourceSha256": "022ae99306edbd0923285b5137a708d73ac3e172a10583cd7ec4844030365705",
-  "bundleSha256": "475da49894bcec3fd3f2b4591472b18925725869a6ef6e1367e382344d5948a1",
+  "sourceSha256": "63651cf44f52b19e1ee17b32dc962dcbc90b00dc2de8e6550e594329d519f7a8",
+  "bundleSha256": "30e2319e315977ff6685365428e456dae4a13e0ebd6ab722313032dee167e6de",
   "files": [
     {
       "sourcePath": "skills/lark-approval/references/lark-approval-approvals-get.md",
@@ -2022,8 +2022,8 @@
     {
       "sourcePath": "skills/lark-shared/SKILL.md",
       "targetPath": "lark-shared/GUIDE.md",
-      "sourceSha256": "74ef954a9417898e127d8addf40f1471e94ec1172036b17c06a1f314060608bd",
-      "outputSha256": "74ef954a9417898e127d8addf40f1471e94ec1172036b17c06a1f314060608bd"
+      "sourceSha256": "70f890b6527e11fd8e3887b032b4abcdb0b607ac4d00a55b158f9325e2b006d0",
+      "outputSha256": "70f890b6527e11fd8e3887b032b4abcdb0b607ac4d00a55b158f9325e2b006d0"
     },
     {
       "sourcePath": "skills/lark-sheets/references/lark-sheets-batch-update.md",

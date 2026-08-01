@@ -21,7 +21,7 @@ description: "Use when: 飞书/Lark 操作、配置、认证、排障，或需�
 ## 更新策略
 
 - 日常调用只设置 `LARKSUITE_CLI_NO_SKILLS_NOTIFIER=1`，保留 binary 更新通知。
-- 更新 binary 时设置 `LARKSUITE_CLI_NO_SKILLS_SYNC=1` 后运行 `lark-cli update`；该开关只跳过官方 skill 同步，不关闭版本检查或 binary 更新。
+- 更新前先检查 `lark-cli update --help`：支持 `--skip-skills` 时，设置 `LARKSUITE_CLI_NO_SKILLS_SYNC=1` 后运行 `lark-cli update`；尚未支持该参数的官方 binary 使用 `npm install -g @larksuite/cli@latest`，该路径只更新 binary。
 - 需要临时同步官方独立 skills 时显式运行 `lark-cli update --skip-skills=false`；默认不要这样做，以免重新安装顶层 skill bundle。
 - 更新 domain guide 时，在 fork 根目录运行 `npm run skills:generate`，验证后只安装或发布 `lark` umbrella。
 

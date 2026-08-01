@@ -29,6 +29,7 @@ To suppress them in non-CI scripts (CI envs are auto-skipped):
 |---------|--------|
 | `LARKSUITE_CLI_NO_UPDATE_NOTIFIER=1` | Suppress `_notice.update` |
 | `LARKSUITE_CLI_NO_SKILLS_NOTIFIER=1` | Suppress `_notice.skills` |
+| `LARKSUITE_CLI_NO_SKILLS_SYNC=1` | Keep binary updates enabled but skip official skills sync by default (`--skip-skills=false` overrides it) |
 
 Both notices recommend the same fix command: `lark-cli update`. The skills notice's `current` field is `""` when skills have never been synced (cold start) and a version string when synced for an older binary (drift).
 

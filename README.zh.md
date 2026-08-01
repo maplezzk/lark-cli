@@ -92,6 +92,18 @@ lark-cli auth login --recommend
 lark-cli calendar +agenda
 ```
 
+#### 更新 CLI 但不同步 skills
+
+仅更新二进制时，可使用一次性参数：
+
+```bash
+lark-cli update --skip-skills
+```
+
+如需在保留更新检查的同时默认只更新二进制，请设置
+`LARKSUITE_CLI_NO_SKILLS_SYNC=1`。需要重新同步官方 skills 时，可显式传入
+`--skip-skills=false`。
+
 ### 快速开始（AI Agent）
 
 > 以下步骤面向 AI Agent，部分步骤需要用户在浏览器中配合完成。

@@ -6,6 +6,7 @@ package cmdupdate
 import (
 	"fmt"
 	stdio "io"
+	"os"
 	"runtime"
 	"strings"
 
@@ -26,6 +27,7 @@ const (
 	maxNpmOutput    = 2000
 	maxStderrDetail = 500
 	osWindows       = "windows"
+	noSkillsSyncEnv = "LARKSUITE_CLI_NO_SKILLS_SYNC"
 )
 
 // Overridable for testing.
@@ -88,15 +90,19 @@ func symArrow() string {
 
 // UpdateOptions holds inputs for the update command.
 type UpdateOptions struct {
-	Factory *cmdutil.Factory
-	JSON    bool
-	Force   bool
-	Check   bool
+	Factory    *cmdutil.Factory
+	JSON       bool
+	Force      bool
+	Check      bool
+	SkipSkills bool
 }
 
 // NewCmdUpdate creates the update command.
 func NewCmdUpdate(f *cmdutil.Factory) *cobra.Command {
-	opts := &UpdateOptions{Factory: f}
+	opts := &UpdateOptions{
+		Factory:    f,
+		SkipSkills: os.Getenv(noSkillsSyncEnv) != "",
+	}
 
 	cmd := &cobra.Command{
 		Use:   "update",
@@ -109,7 +115,9 @@ Detects the installation method automatically:
   - manual/other: shows GitHub Releases download URL
 
 Use --json for structured output (for AI agents and scripts).
-Use --check to only check for updates without installing.`,
+Use --check to only check for updates without installing.
+Use --skip-skills to update the binary without syncing official AI skills.
+Set LARKSUITE_CLI_NO_SKILLS_SYNC=1 to make --skip-skills the default.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return updateRun(opts)
 		},
@@ -118,6 +126,7 @@ Use --check to only check for updates without installing.`,
 	cmd.Flags().BoolVar(&opts.JSON, "json", false, "structured JSON output")
 	cmd.Flags().BoolVar(&opts.Force, "force", false, "force reinstall even if already up to date")
 	cmd.Flags().BoolVar(&opts.Check, "check", false, "only check for updates, do not install")
+	cmd.Flags().BoolVar(&opts.SkipSkills, "skip-skills", opts.SkipSkills, "update binary without syncing official AI skills")
 	cmdutil.SetRisk(cmd, "high-risk-write")
 
 	return cmd
@@ -130,7 +139,9 @@ func updateRun(opts *UpdateOptions) error {
 	// Brand only steers skills sync. updateRun skips that resolution in --check,
 	// where the Updater's zero-value brand retains the Feishu default.
 	if !opts.Check {
-		updater.Brand = resolveSkillsBrand(opts.Factory, io.ErrOut)
+		if !opts.SkipSkills {
+			updater.Brand = resolveSkillsBrand(opts.Factory, io.ErrOut)
+		}
 		updater.CleanupStaleFiles()
 	}
 	output.PendingNotice = nil
@@ -152,7 +163,7 @@ func updateRun(opts *UpdateOptions) error {
 	if !opts.Force && !update.IsNewer(latest, cur) {
 		var skillsResult *skillscheck.SyncResult
 		if !opts.Check {
-			skillsResult = runSkillsAndState(updater, io, cur, opts.Force)
+			skillsResult = runUpdateSkills(opts, updater, io, cur)
 		}
 		return reportAlreadyUpToDate(opts, io, cur, latest, skillsResult, opts.Check)
 	}
@@ -229,7 +240,7 @@ func reportCheckResult(opts *UpdateOptions, io *cmdutil.IOStreams, cur, latest s
 }
 
 func doManualUpdate(opts *UpdateOptions, io *cmdutil.IOStreams, cur, latest string, detect selfupdate.DetectResult, updater *selfupdate.Updater) error {
-	skillsResult := runSkillsAndState(updater, io, cur, opts.Force)
+	skillsResult := runUpdateSkills(opts, updater, io, cur)
 
 	reason := detect.ManualReason()
 	if opts.JSON {
@@ -239,7 +250,7 @@ func doManualUpdate(opts *UpdateOptions, io *cmdutil.IOStreams, cur, latest stri
 			"message": fmt.Sprintf("Automatic update unavailable: %s (path: %s)", reason, detect.ResolvedPath),
 			"url":     releaseURL(latest), "changelog": changelogURL(),
 		}
-		applySkillsResult(out, skillsResult)
+		applySkillsResult(out, skillsResult, opts.SkipSkills)
 		output.PrintJson(io.Out, out)
 		return nil
 	}
@@ -252,7 +263,7 @@ func doManualUpdate(opts *UpdateOptions, io *cmdutil.IOStreams, cur, latest stri
 	} else {
 		fmt.Fprintf(io.ErrOut, "\nOr install via npm (note: skills will not be synced):\n  npm install -g %s@%s\n  npx skills add larksuite/cli -y -g   # sync skills separately\n", selfupdate.NpmPackage, latest)
 	}
-	emitSkillsTextHints(io, skillsResult)
+	emitSkillsTextHints(io, skillsResult, opts.SkipSkills)
 	return nil
 }
 
@@ -319,7 +330,7 @@ func doAutoUpdate(opts *UpdateOptions, io *cmdutil.IOStreams, cur, latest string
 		return output.ErrBare(output.ExitAPI)
 	}
 
-	skillsResult := runSkillsAndState(updater, io, latest, opts.Force)
+	skillsResult := runUpdateSkills(opts, updater, io, latest)
 
 	if opts.JSON {
 		result := map[string]interface{}{
@@ -328,7 +339,7 @@ func doAutoUpdate(opts *UpdateOptions, io *cmdutil.IOStreams, cur, latest string
 			"message": fmt.Sprintf("lark-cli updated from %s to %s", cur, latest),
 			"url":     releaseURL(latest), "changelog": changelogURL(),
 		}
-		applySkillsResult(result, skillsResult)
+		applySkillsResult(result, skillsResult, opts.SkipSkills)
 		output.PrintJson(io.Out, result)
 		return nil
 	}
@@ -342,7 +353,7 @@ func doAutoUpdate(opts *UpdateOptions, io *cmdutil.IOStreams, cur, latest string
 		}
 		fmt.Fprintf(io.ErrOut, "\nUpdating skills via %s ...\n", skillsPM)
 	}
-	emitSkillsTextHints(io, skillsResult)
+	emitSkillsTextHints(io, skillsResult, opts.SkipSkills)
 	return nil
 }
 
@@ -383,6 +394,13 @@ func runSkillsAndState(updater *selfupdate.Updater, io *cmdutil.IOStreams, state
 	return result
 }
 
+func runUpdateSkills(opts *UpdateOptions, updater *selfupdate.Updater, io *cmdutil.IOStreams, stateVersion string) *skillscheck.SyncResult {
+	if opts.SkipSkills {
+		return nil
+	}
+	return runSkillsAndState(updater, io, stateVersion, opts.Force)
+}
+
 // reportAlreadyUpToDate emits the JSON / pretty output for the
 // already-up-to-date branch, including any skills_action / skills_warning
 // fields derived from skillsResult. When check is true, this is the pure
@@ -398,14 +416,14 @@ func reportAlreadyUpToDate(opts *UpdateOptions, io *cmdutil.IOStreams, cur, late
 		if check {
 			applySkillsStatus(out, cur)
 		} else {
-			applySkillsResult(out, skillsResult)
+			applySkillsResult(out, skillsResult, opts.SkipSkills)
 		}
 		output.PrintJson(io.Out, out)
 		return nil
 	}
 	fmt.Fprintf(io.ErrOut, "%s lark-cli %s is already up to date\n", symOK(), cur)
 	if !check {
-		emitSkillsTextHints(io, skillsResult)
+		emitSkillsTextHints(io, skillsResult, opts.SkipSkills)
 	}
 	return nil
 }
@@ -432,8 +450,10 @@ func applySkillsStatus(env map[string]interface{}, target string) {
 	env["skills_status"] = status
 }
 
-func applySkillsResult(env map[string]interface{}, r *skillscheck.SyncResult) {
+func applySkillsResult(env map[string]interface{}, r *skillscheck.SyncResult, skipped bool) {
 	switch {
+	case skipped:
+		env["skills_action"] = "skipped"
 	case r == nil:
 		env["skills_action"] = "in_sync"
 	case r.Err != nil:
@@ -459,8 +479,10 @@ func skillsSummary(r *skillscheck.SyncResult) map[string]interface{} {
 	return summary
 }
 
-func emitSkillsTextHints(io *cmdutil.IOStreams, r *skillscheck.SyncResult) {
+func emitSkillsTextHints(io *cmdutil.IOStreams, r *skillscheck.SyncResult, skipped bool) {
 	switch {
+	case skipped:
+		fmt.Fprintf(io.ErrOut, "%s Skills sync skipped (--skip-skills)\n", symOK())
 	case r == nil:
 	case r.Err != nil:
 		fmt.Fprintf(io.ErrOut, "%s Skills update failed: %v\n", symWarn(), r.Err)

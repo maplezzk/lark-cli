@@ -92,6 +92,18 @@ lark-cli auth login --recommend
 lark-cli calendar +agenda
 ```
 
+#### Update the CLI without syncing skills
+
+Use the one-shot flag when you only want to update the binary:
+
+```bash
+lark-cli update --skip-skills
+```
+
+To make binary-only updates the default while keeping update checks enabled,
+set `LARKSUITE_CLI_NO_SKILLS_SYNC=1`. Pass `--skip-skills=false` when you want
+to explicitly sync the official skills again.
+
 ## Quick Start (AI Agent)
 
 > The following steps are for AI Agents. Some steps require the user to complete actions in a browser.

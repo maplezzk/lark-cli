@@ -1394,6 +1394,203 @@ func TestUpdateRun_Npm_RunsSkillsSync_WritesLatestState(t *testing.T) {
 	}
 }
 
+func TestUpdateRun_Npm_SkipSkillsUpdatesBinaryOnly(t *testing.T) {
+	t.Setenv("LARKSUITE_CLI_CONFIG_DIR", t.TempDir())
+	t.Setenv(noSkillsSyncEnv, "")
+
+	origFetch := fetchLatest
+	origCur := currentVersion
+	origNew := newUpdater
+	origSync := syncSkills
+	t.Cleanup(func() {
+		fetchLatest = origFetch
+		currentVersion = origCur
+		newUpdater = origNew
+		syncSkills = origSync
+	})
+	fetchLatest = func() (string, error) { return "1.0.22", nil }
+	currentVersion = func() string { return "1.0.21" }
+
+	installed := false
+	skillsCalled := false
+	newUpdater = func() *selfupdate.Updater {
+		return &selfupdate.Updater{
+			DetectOverride: func() selfupdate.DetectResult {
+				return selfupdate.DetectResult{
+					Method: selfupdate.InstallNpm, NpmAvailable: true,
+					ResolvedPath: "/usr/local/bin/lark-cli",
+				}
+			},
+			NpmInstallOverride: func(version string) *selfupdate.NpmResult {
+				installed = true
+				return &selfupdate.NpmResult{}
+			},
+			VerifyOverride: func(expectedVersion string) error { return nil },
+		}
+	}
+	syncSkills = func(opts skillscheck.SyncOptions) *skillscheck.SyncResult {
+		skillsCalled = true
+		return &skillscheck.SyncResult{}
+	}
+
+	f, stdout, _ := newTestFactory(t)
+	cmd := NewCmdUpdate(f)
+	cmd.SetArgs([]string{"--json", "--skip-skills"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("update --skip-skills err = %v, want nil", err)
+	}
+	if !installed {
+		t.Error("binary install not called with --skip-skills")
+	}
+	if skillsCalled {
+		t.Error("skills sync called with --skip-skills")
+	}
+
+	var env map[string]interface{}
+	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+		t.Fatalf("json.Unmarshal stdout: %v\n%s", err, stdout.String())
+	}
+	if env["action"] != "updated" || env["skills_action"] != "skipped" {
+		t.Errorf("update result = %+v, want action=updated skills_action=skipped", env)
+	}
+	if _, readable, err := skillscheck.ReadState(); err != nil || readable {
+		t.Errorf("ReadState() = (_, %v, %v), want no skills state written", readable, err)
+	}
+}
+
+func TestUpdateRun_NoSkillsSyncEnvSkipsAlreadyLatestSync(t *testing.T) {
+	t.Setenv("LARKSUITE_CLI_CONFIG_DIR", t.TempDir())
+	t.Setenv(noSkillsSyncEnv, "1")
+
+	origFetch := fetchLatest
+	origCur := currentVersion
+	origNew := newUpdater
+	origSync := syncSkills
+	t.Cleanup(func() {
+		fetchLatest = origFetch
+		currentVersion = origCur
+		newUpdater = origNew
+		syncSkills = origSync
+	})
+	fetchLatest = func() (string, error) { return "1.0.21", nil }
+	currentVersion = func() string { return "1.0.21" }
+	newUpdater = func() *selfupdate.Updater { return &selfupdate.Updater{} }
+
+	skillsCalled := false
+	syncSkills = func(opts skillscheck.SyncOptions) *skillscheck.SyncResult {
+		skillsCalled = true
+		return &skillscheck.SyncResult{}
+	}
+
+	f, stdout, _ := newTestFactory(t)
+	cmd := NewCmdUpdate(f)
+	cmd.SetArgs([]string{"--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("update with %s err = %v, want nil", noSkillsSyncEnv, err)
+	}
+	if skillsCalled {
+		t.Errorf("skills sync called with %s set", noSkillsSyncEnv)
+	}
+
+	var env map[string]interface{}
+	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+		t.Fatalf("json.Unmarshal stdout: %v\n%s", err, stdout.String())
+	}
+	if env["action"] != "already_up_to_date" || env["skills_action"] != "skipped" {
+		t.Errorf("update result = %+v, want action=already_up_to_date skills_action=skipped", env)
+	}
+}
+
+func TestUpdateRun_SkipSkillsFalseOverridesEnv(t *testing.T) {
+	t.Setenv("LARKSUITE_CLI_CONFIG_DIR", t.TempDir())
+	t.Setenv(noSkillsSyncEnv, "1")
+
+	origFetch := fetchLatest
+	origCur := currentVersion
+	origNew := newUpdater
+	origSync := syncSkills
+	t.Cleanup(func() {
+		fetchLatest = origFetch
+		currentVersion = origCur
+		newUpdater = origNew
+		syncSkills = origSync
+	})
+	fetchLatest = func() (string, error) { return "1.0.21", nil }
+	currentVersion = func() string { return "1.0.21" }
+	newUpdater = func() *selfupdate.Updater { return &selfupdate.Updater{} }
+
+	skillsCalled := false
+	syncSkills = func(opts skillscheck.SyncOptions) *skillscheck.SyncResult {
+		skillsCalled = true
+		return &skillscheck.SyncResult{}
+	}
+
+	f, stdout, _ := newTestFactory(t)
+	cmd := NewCmdUpdate(f)
+	cmd.SetArgs([]string{"--json", "--skip-skills=false"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("update --skip-skills=false err = %v, want nil", err)
+	}
+	if !skillsCalled {
+		t.Errorf("skills sync not called when --skip-skills=false overrides %s", noSkillsSyncEnv)
+	}
+
+	var env map[string]interface{}
+	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+		t.Fatalf("json.Unmarshal stdout: %v\n%s", err, stdout.String())
+	}
+	if env["skills_action"] != "synced" {
+		t.Errorf("skills_action = %v, want synced", env["skills_action"])
+	}
+}
+
+func TestUpdateRun_ManualSkipSkillsDoesNotSync(t *testing.T) {
+	t.Setenv("LARKSUITE_CLI_CONFIG_DIR", t.TempDir())
+
+	origFetch := fetchLatest
+	origCur := currentVersion
+	origNew := newUpdater
+	origSync := syncSkills
+	t.Cleanup(func() {
+		fetchLatest = origFetch
+		currentVersion = origCur
+		newUpdater = origNew
+		syncSkills = origSync
+	})
+	fetchLatest = func() (string, error) { return "1.0.22", nil }
+	currentVersion = func() string { return "1.0.21" }
+	newUpdater = func() *selfupdate.Updater {
+		return &selfupdate.Updater{DetectOverride: func() selfupdate.DetectResult {
+			return selfupdate.DetectResult{
+				Method: selfupdate.InstallManual, ResolvedPath: "/usr/local/bin/lark-cli",
+			}
+		}}
+	}
+
+	skillsCalled := false
+	syncSkills = func(opts skillscheck.SyncOptions) *skillscheck.SyncResult {
+		skillsCalled = true
+		return &skillscheck.SyncResult{}
+	}
+
+	f, stdout, _ := newTestFactory(t)
+	opts := &UpdateOptions{Factory: f, JSON: true, SkipSkills: true}
+	if err := updateRun(opts); err != nil {
+		t.Fatalf("updateRun(manual, --skip-skills) err = %v, want nil", err)
+	}
+	if skillsCalled {
+		t.Error("skills sync called in manual branch with --skip-skills")
+	}
+
+	var env map[string]interface{}
+	if err := json.Unmarshal(stdout.Bytes(), &env); err != nil {
+		t.Fatalf("json.Unmarshal stdout: %v\n%s", err, stdout.String())
+	}
+	if env["action"] != "manual_required" || env["skills_action"] != "skipped" {
+		t.Errorf("update result = %+v, want action=manual_required skills_action=skipped", env)
+	}
+}
+
 func TestUpdateRun_CheckIncludesSkillsStatus(t *testing.T) {
 	t.Setenv("LARKSUITE_CLI_CONFIG_DIR", t.TempDir())
 	if err := skillscheck.WriteState(skillscheck.SkillsState{
@@ -1538,7 +1735,7 @@ func TestRunSkillsAndState_StateWriteFailureWarns(t *testing.T) {
 
 func TestEmitSkillsTextHints_Success(t *testing.T) {
 	f, _, stderr := newTestFactory(t)
-	emitSkillsTextHints(f.IOStreams, &skillscheck.SyncResult{Official: []string{"lark-calendar"}, Updated: []string{"lark-calendar"}})
+	emitSkillsTextHints(f.IOStreams, &skillscheck.SyncResult{Official: []string{"lark-calendar"}, Updated: []string{"lark-calendar"}}, false)
 	if !strings.Contains(stderr.String(), "Skills updated") {
 		t.Errorf("stderr does not contain 'Skills updated': %q", stderr.String())
 	}

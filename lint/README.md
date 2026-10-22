@@ -18,7 +18,7 @@ lint/
 ├── main.go             # package main — dispatches to every registered domain
 ├── lintapi/            # shared types every domain returns
 │   └── violation.go    # Violation, Action, ActionReject / ActionLabel / ActionWarning
-└── errscontract/       # first domain: typed-error contract guards
+├── errscontract/       # first domain: typed-error contract guards
     ├── scan.go         # ScanRepoWithOptions(root, opts)  ← public entry
     ├── runner.go
     ├── typecheck.go
@@ -30,13 +30,25 @@ lint/
     ├── rule_subtype_classifier.go
     ├── rule_typed_error_completeness.go
     └── *_test.go
-└── domaincontract/     # resolver ownership + approved public hostname policy
+├── domaincontract/     # resolver ownership + approved public hostname policy
     ├── scan.go         # ScanRepoWithOptions(root, opts)  ← public entry
     ├── unapproved.go   # Go AST/type-aware hostname extraction
     ├── policy.go       # exact public/fixture allowlist validation
     ├── diff.go         # added-line attribution
     └── *_test.go
+└── flagcontract/       # framework ownership for flag aliases
+    ├── scan.go         # rejects local name normalizers
+    └── scan_test.go
 ```
+
+## Flag alias contract (`flagcontract`)
+
+`flagcontract` keeps exact flag-name synonyms on the shared framework path. It
+rejects production calls to `SetNormalizeFunc` outside `internal/flagalias`.
+Exact synonyms belong in the canonical `common.Flag.Aliases`; legacy inputs
+with a different value grammar or meaning remain real hidden flags and
+normalize into canonical state inside the business-owned `Shortcut.Normalize`
+execution stage.
 
 ## Endpoint domain contract (`domaincontract`)
 
@@ -99,6 +111,15 @@ hostnames, and have a current in-scope use. See
 
 This is not a general outbound-URL or cross-language data-flow analyzer. It does
 not inspect non-Go assets or dynamically constructed values.
+
+For added production lines in the CLI runtime (`main.go`, `cmd/`, `internal/`,
+and `shortcuts/`), the same scan also requires approved static HTTP(S)/WS(S) URLs to
+appear inside `urlrewrite.Rewrite(...)`. This covers literals, constant uses,
+and static concatenation while leaving platform network URLs in
+`core.ResolveEndpoints` untouched; those are rewritten by the transport layer.
+Tests, quality-gate tooling, and the URL rewrite implementation itself are out
+of scope. A non-routable identifier such as a protocol namespace may use
+`//nolint:urlrewrite <reason>` on the same or immediately preceding line.
 
 To add or change a resolver-owned Feishu/Lark endpoint, edit the resolver rather
 than hardcoding the host elsewhere.

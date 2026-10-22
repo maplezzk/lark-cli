@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/larksuite/cli/errs"
+	"github.com/larksuite/cli/internal/transport"
 	"github.com/larksuite/cli/internal/validate"
 	"github.com/larksuite/cli/shortcuts/common"
 )
@@ -74,11 +75,9 @@ func normalizeTimestamp(raw string) (string, error) {
 	return "", errs.NewValidationError(errs.SubtypeInvalidArgument, "invalid timestamp %q (want relative 7d/2h/30s, date 2026-04-15, datetime 2026-04-15T10:00:00, or ISO 8601 with TZ)", s)
 }
 
-// newFileTransferClient 直传 / 直下对象存储 presigned URL 用（绕开 Lark 网关，无需 auth、无超时以容纳大文件）。
-//
-//nolint:forbidigo // presigned object-storage transfer bypasses the Lark gateway — raw http.Client is required (no Lark auth, no gateway routing); not a Lark API call, so RuntimeContext.DoAPI does not apply.
+//nolint:forbidigo // Presigned transfers use the external HTTP policy.
 func newFileTransferClient() *http.Client {
-	return &http.Client{Transport: http.DefaultTransport}
+	return transport.NewExternalHTTPClient(0)
 }
 
 // URL helpers for the file (storage) CLI commands.
@@ -119,6 +118,32 @@ func appFileBatchRemovePath(appID string) string {
 // appFileQuotaPath 返回存储配额查询 URL：storage/file_quota（file_quota_get→file_quota）。
 func appFileQuotaPath(appID string) string {
 	return fmt.Sprintf("%s/apps/%s/storage/file_quota", apiBasePath, validate.EncodePathSegment(appID))
+}
+
+// requireFileAppID resolves --app-id for the file commands, which address an app
+// by its real id only.
+//
+// The prefix check is here rather than in requireAppID because the two are not
+// interchangeable across the domain: +export and +get accept an app id or a meta
+// token in the same argument and let the server tell them apart, so a blanket
+// prefix rule would break them (see the note in validateExportFlags). Storage has
+// no such dual form, so rejecting the shape up front loses nothing.
+//
+// This is the only layer that can name the mistake. Storage reports a malformed
+// app id as "app not found" — true, but it points at verifying an id the caller
+// never had, when what they are holding is a meta token or a page token.
+// validateRealAppID says which argument is wrong and its hint carries the command
+// that converts the token into an app id, so the fix is in front of them rather
+// than a round trip away.
+func requireFileAppID(raw string) (string, error) {
+	appID, err := requireAppID(raw)
+	if err != nil {
+		return "", err
+	}
+	if err := validateRealAppID(appID); err != nil {
+		return "", err
+	}
+	return appID, nil
 }
 
 // requireFilePath trims --path and rejects blank, returning a uniform validation error.

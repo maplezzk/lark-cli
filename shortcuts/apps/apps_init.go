@@ -17,6 +17,7 @@ import (
 
 	"github.com/larksuite/cli/errs"
 	"github.com/larksuite/cli/internal/charcheck"
+	"github.com/larksuite/cli/internal/urlrewrite"
 	"github.com/larksuite/cli/shortcuts/common"
 )
 
@@ -86,6 +87,10 @@ var appTypePolicies = map[string]appTypePolicy{
 	// no startup env vars to pull, no steering skills to sync, and no app sync.
 	"modern_html": {skipInstall: true, skipEnvPull: true, skipSkillsSync: true, skipAppSync: true},
 	"html":        {skipInstall: true, skipEnvPull: true, skipSkillsSync: true, skipAppSync: true},
+	// frontend (vite-react, a buildable front-end app) is intentionally NOT
+	// listed here: it takes the zero-value policy (install deps, pull env, sync
+	// skills) like full_stack, since it needs a build step — it is not a static
+	// HTML site and must not skip those steps.
 }
 
 // policyForAppType returns the +init control strategy for appType. Unlisted
@@ -415,9 +420,12 @@ func runScaffold(ctx context.Context, dir, appID, appType, sourcePath string) (s
 		}
 		return scaffoldKindInit, nil
 	}
+	// The npm registry is a CLI-owned URL handed to the child process, so it
+	// passes through the URL rewrite extension once for both npx invocations.
+	registry := urlrewrite.Rewrite(npmRegistry)
 	policy := policyForAppType(appType)
 	if !policy.skipAppSync {
-		if _, stderr, err := initRunner.Run(ctx, dir, "npx", "-y", "--prefer-online", "--registry", npmRegistry, miaodaCLIPkg, "app", "sync"); err != nil {
+		if _, stderr, err := initRunner.Run(ctx, dir, "npx", "-y", "--prefer-online", "--registry", registry, miaodaCLIPkg, "app", "sync"); err != nil {
 			return "", appsExternalToolError(err, "npx app sync failed: %s", gitErr(stderr, err))
 		}
 	}
@@ -425,7 +433,7 @@ func runScaffold(ctx context.Context, dir, appID, appType, sourcePath string) (s
 		return "", err
 	}
 	if !policy.skipSkillsSync && !hasSteeringSkills(dir) {
-		if _, stderr, err := initRunner.Run(ctx, dir, "npx", "-y", "--prefer-online", "--registry", npmRegistry, miaodaCLIPkg, "skills", "sync", "--local"); err != nil {
+		if _, stderr, err := initRunner.Run(ctx, dir, "npx", "-y", "--prefer-online", "--registry", registry, miaodaCLIPkg, "skills", "sync", "--local"); err != nil {
 			return "", appsExternalToolError(err, "npx skills sync failed: %s", gitErr(stderr, err))
 		}
 	}
@@ -438,8 +446,16 @@ func runScaffold(ctx context.Context, dir, appID, appType, sourcePath string) (s
 // --skip-install is appended per the app_type's policy (see appTypePolicy):
 // types whose policy sets skipInstall (e.g. modern_html) skip the dependency
 // install; others run it as usual.
+// appType is forwarded verbatim (including "frontend") — the CLI does not
+// translate the app type; mapping the app type to a concrete tech stack is the
+// downstream tool's responsibility. The registry is a CLI-owned URL handed to
+// npx, so it passes through the URL rewrite extension.
 func scaffoldInitArgs(appType, appID, sourcePath string) []string {
-	base := []string{"-y", "--prefer-online", "--registry", npmRegistry, miaodaCLIPkg, "app", "init"}
+	return scaffoldInitArgsWithRegistry(urlrewrite.Rewrite(npmRegistry), appType, appID, sourcePath)
+}
+
+func scaffoldInitArgsWithRegistry(registry, appType, appID, sourcePath string) []string {
+	base := []string{"-y", "--prefer-online", "--registry", registry, miaodaCLIPkg, "app", "init"}
 	at := appType
 	if at == "" {
 		at = "full_stack"

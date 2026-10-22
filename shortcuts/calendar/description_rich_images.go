@@ -5,13 +5,6 @@ package calendar
 
 import (
 	"fmt"
-	"image"
-
-	// Register the common image decoders so DecodeConfig can read intrinsic
-	// dimensions for PNG/JPEG/GIF sources.
-	_ "image/gif"
-	_ "image/jpeg"
-	_ "image/png"
 	"net/url"
 	"path/filepath"
 	"regexp"
@@ -19,6 +12,8 @@ import (
 
 	"github.com/larksuite/cli/errs"
 	"github.com/larksuite/cli/internal/core"
+	"github.com/larksuite/cli/internal/imageconfig"
+	"github.com/larksuite/cli/internal/urlrewrite"
 	"github.com/larksuite/cli/internal/validate"
 	"github.com/larksuite/cli/shortcuts/common"
 )
@@ -119,7 +114,7 @@ func decodeImageDimensions(runtime *common.RuntimeContext, path string) (int, in
 		return 0, 0
 	}
 	defer f.Close()
-	cfg, _, err := image.DecodeConfig(f)
+	cfg, _, err := imageconfig.Decode(f)
 	if err != nil {
 		return 0, 0
 	}
@@ -168,5 +163,5 @@ func buildCalendarImagePreviewURL(brand core.LarkBrand, fileToken string, width,
 	if size > 0 {
 		u += fmt.Sprintf("&im_size=%d", size)
 	}
-	return u
+	return urlrewrite.Rewrite(u)
 }

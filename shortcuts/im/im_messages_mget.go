@@ -28,7 +28,7 @@ var ImMessagesMGet = common.Shortcut{
 	AuthTypes:   []string{"user", "bot"},
 	HasFormat:   true,
 	Flags: []common.Flag{
-		{Name: "message-ids", Desc: "message IDs, comma-separated (om_xxx,om_yyy)", Required: true},
+		{Name: "message-ids", Aliases: []string{"message-id"}, Desc: "message IDs, comma-separated (om_xxx,om_yyy)", Required: true},
 		{Name: "no-reactions", Type: "bool", Desc: "skip auto-fetching reactions for each message (default: enrichment enabled)"},
 		downloadResourcesFlag,
 	},
@@ -46,14 +46,15 @@ var ImMessagesMGet = common.Shortcut{
 	},
 	Validate: func(ctx context.Context, runtime *common.RuntimeContext) error {
 		ids := common.SplitCSV(runtime.Str("message-ids"))
+		const param = "--message-ids"
 		if len(ids) == 0 {
-			return errs.NewValidationError(errs.SubtypeInvalidArgument, "--message-ids is required (comma-separated om_xxx)").WithParam("--message-ids")
+			return errs.NewValidationError(errs.SubtypeInvalidArgument, "--message-ids is required (comma-separated om_xxx)").WithParam(param)
 		}
 		if len(ids) > maxMGetMessageIDs {
-			return errs.NewValidationError(errs.SubtypeInvalidArgument, "--message-ids supports at most %d IDs per request (got %d)", maxMGetMessageIDs, len(ids)).WithParam("--message-ids")
+			return errs.NewValidationError(errs.SubtypeInvalidArgument, "--message-ids supports at most %d IDs per request (got %d)", maxMGetMessageIDs, len(ids)).WithParam(param)
 		}
 		for _, id := range ids {
-			if _, err := validateMessageID(id); err != nil {
+			if _, err := validateMessageIDForParam(id, param); err != nil {
 				return err
 			}
 		}
@@ -77,12 +78,13 @@ var ImMessagesMGet = common.Shortcut{
 		// also pre-resolves every sub-item's sender open_id in one batched
 		// contact API call.
 		mergePrefetch := convertlib.PrefetchMergeForwardSubItems(runtime, rawItems, nameCache)
+		folderPrefetch := convertlib.PrefetchFolderChildren(runtime, rawItems)
 
 		downloadResources := runtime.Bool("download-resources")
 		messages := make([]map[string]interface{}, 0, len(rawItems))
 		for _, item := range rawItems {
 			m, _ := item.(map[string]interface{})
-			messages = append(messages, convertlib.FormatMessageItemWithMergePrefetchOpts(m, runtime, nameCache, mergePrefetch, downloadResources))
+			messages = append(messages, convertlib.FormatMessageItemWithFolderPrefetchOpts(m, runtime, nameCache, mergePrefetch, folderPrefetch, downloadResources))
 		}
 
 		convertlib.ResolveSenderNames(runtime, messages, nameCache)

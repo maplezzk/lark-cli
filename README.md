@@ -8,7 +8,7 @@
 
 The official [Lark/Feishu](https://www.larksuite.com/) CLI tool, maintained by the [larksuite](https://github.com/larksuite) team — built for humans and AI Agents. Covers core business domains including Messenger, Docs, Base, Sheets, Slides, Calendar, Mail, Tasks, Meetings, Markdown, and more, with 200+ commands and 26 AI Agent [Skills](./skills/).
 
-[Install](#installation--quick-start) · [AI Agent Skills](#agent-skills) · [Auth](#authentication) · [Commands](#three-layer-command-system) · [Advanced](#advanced-usage) · [Security](#security--risk-warnings-read-before-use) · [Contributing](#contributing)
+[Install](#installation--quick-start) · [AI Agent Skills](#agent-skills) · [Auth](#authentication) · [Commands](#three-layer-command-system) · [Advanced](#advanced-usage) · [Enterprise](#personal-or-enterprise) · [Security](#security--risk-warnings-read-before-use) · [Contributing](#contributing)
 
 ## Why lark-cli?
 
@@ -19,6 +19,15 @@ The official [Lark/Feishu](https://www.larksuite.com/) CLI tool, maintained by t
 - **Up and Running in 3 Minutes** — One-click app creation, interactive login, from install to first API call in just 3 steps
 - **Secure & Controllable** — Input injection protection, terminal output sanitization, OS-native keychain credential storage
 - **Three-Layer Architecture** — Shortcuts (human & AI friendly) → API Commands (platform-synced) → Raw API (full coverage), choose the right granularity
+
+## Personal or Enterprise?
+
+| You are... | Recommended path |
+| ---------- | ---------------- |
+| **An individual developer** — using lark-cli in your terminal or with your own AI Agent | Follow the [Quick Start](#installation--quick-start) below |
+| **Enterprise IT / ISV** — embedding lark-cli into your own Agent or platform, with centralized credentials (database / Vault / config center), unified audit logging, and a restricted command surface | Read [Embed lark-cli in your Agent](https://open.larksuite.com/document/mcp_open_tools/feishu-cli/embed-feishu-cli-in-agent) and the [`extension/`](./extension/) packages — extend via a wrapper `main`, no need to modify CLI source |
+
+> 💡 **For AI Agents:** append `.md` to any Open Platform doc URL to fetch it as raw Markdown, e.g. [`embed-feishu-cli-in-agent.md`](https://open.larksuite.com/document/mcp_open_tools/feishu-cli/embed-feishu-cli-in-agent.md).
 
 ## Features
 
@@ -36,7 +45,7 @@ The official [Lark/Feishu](https://www.larksuite.com/) CLI tool, maintained by t
 | 📚 Wiki       | Create and manage knowledge spaces, nodes, and documents                                                                          |
 | 👤 Contact    | Search users by name/email/phone, get user profiles                                                                               |
 | 📧 Mail       | Browse, search, read emails, send, reply, forward, manage drafts, watch new mail                                                  |
-| 🎥 Meetings   | Search meeting records, query meeting minutes artifacts and recordings                                                            |
+| 🎥 Meetings   | Search live and historical meetings, inspect participants and artifacts, analyze transcripts, manage Minutes, and assist in meetings |
 | 🕐 Attendance | Query personal attendance check-in records                                                                                        |
 | ✍️ Approval   | Query approval tasks, approve/reject/transfer tasks, cancel and CC instances                                                      |
 | 🎯 OKR        | Query, create, update OKRs; manage objective & key results, alignments, indicators and progress.                                  |
@@ -104,6 +113,8 @@ To make binary-only updates the default while keeping update checks enabled,
 set `LARKSUITE_CLI_NO_SKILLS_SYNC=1`. Pass `--skip-skills=false` when you want
 to explicitly sync the official skills again.
 
+This option applies to official updates. Configured distribution updates install the binary and Skills atomically. If binary-only updates were enabled by the flag or environment, pass `--skip-skills=false`; `--check` remains read-only. Do not combine `--skip-skills` with `--skills-layout`.
+
 ## Quick Start (AI Agent)
 
 > The following steps are for AI Agents. Some steps require the user to complete actions in a browser.
@@ -162,9 +173,8 @@ The umbrella is generated from this repository's `skills/lark-*` sources with `n
 | `lark-contact`                  | Search users by name/email/phone, get user profiles                                                            |
 | `lark-wiki`                     | Knowledge spaces, nodes, documents                                                                             |
 | `lark-event`                    | Real-time event subscriptions (WebSocket), regex routing & agent-friendly format                               |
-| `lark-vc`                       | Search meeting records, query meeting minutes (summary, todos, transcript)                                     |
+| `lark-meeting`                  | Search live or historical meetings, inspect participants and artifacts, analyze transcripts, manage Minutes, and assist in meetings |
 | `lark-whiteboard`               | Whiteboard/chart DSL rendering                                                                                 |
-| `lark-minutes`                  | Minutes metadata & AI artifacts (summary, todos, chapters); upload audio/video to create minutes, download media |
 | `lark-openapi-explorer`         | Explore underlying APIs from official docs                                                                     |
 | `lark-skill-maker`              | Custom skill creation framework                                                                                |
 | `lark-attendance`               | Query personal attendance check-in records                                                                     |
@@ -201,6 +211,15 @@ lark-cli auth login --scope "calendar:calendar:read"
 lark-cli auth login --domain calendar --no-wait
 # Resume polling later
 lark-cli auth login --device-code <DEVICE_CODE>
+
+# DPoP (Demonstrating Proof of Possession) is enabled in preferred mode by default for new local credentials
+lark-cli config set dpop preferred
+# Or disable DPoP
+lark-cli config set dpop disabled
+# Or require DPoP without Bearer fallback
+lark-cli config set dpop required
+# Re-authorize after choosing a different policy
+lark-cli auth login
 
 # Identity switching: execute commands as user or bot
 lark-cli calendar +agenda --as user
@@ -329,10 +348,6 @@ lark-cli config risk-control default
 ```
 
 Please fully understand all usage risks. By using this tool, you are deemed to voluntarily assume all related responsibilities.
-
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=larksuite/cli&type=Date)](https://star-history.com/#larksuite/cli&Date)
 
 ## Contributing
 

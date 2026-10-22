@@ -27,7 +27,7 @@ import (
 var FormulaVerify = common.Shortcut{
 	Service:     "sheets",
 	Command:     "+formula-verify",
-	Description: "Scan formulas / cell errors and return a recalc.py-shaped status report (success / errors_found / partial).",
+	Description: "Scan formulas / cell errors and return a recalc.py-shaped status report (success / errors_found / partial). Use --ai-only to read AI-formula compute status only.",
 	Risk:        "read",
 	Scopes:      []string{"sheets:spreadsheet:read"},
 	AuthTypes:   []string{"user", "bot"},
@@ -135,6 +135,20 @@ func formulaVerifyInput(runtime *common.RuntimeContext, token string) map[string
 	}
 	if runtime.Changed("max-locations") {
 		input["max_locations_per_error"] = runtime.Int("max-locations")
+	}
+	// ai_only routes verify_formula to the AI-formula-only branch (BE-1): the
+	// backend skips the ordinary 7-Excel-error worksheet scan and only reads AI
+	// formula compute status (the unified =AI(prompt, [range]) function) via the
+	// container-layer AIManager.
+	//
+	// One call returns the current status and that is the whole contract:
+	// delivery turns on ai_formula_failed_count == 0, and formulas still
+	// pending are delivered with a note rather than waited on. Callers do NOT
+	// re-invoke until pending clears. ai_formula_total is not a count of the
+	// cells just written and is not narrowed by --range, so it cannot serve as
+	// a completion measure either.
+	if runtime.Bool("ai-only") {
+		input["ai_only"] = true
 	}
 	return input
 }

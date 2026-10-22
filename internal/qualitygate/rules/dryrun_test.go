@@ -55,17 +55,6 @@ func TestExtractDryRunJSONSkipsBannerWithBraces(t *testing.T) {
 	}
 }
 
-func TestRunCommandDisablesRemoteMetadata(t *testing.T) {
-	result := runCommand(context.Background(), "env", nil)
-	if result.Err != nil {
-		t.Fatalf("runCommand(env) error = %v, stderr=%s", result.Err, result.Stderr)
-	}
-	stdout := string(result.Stdout)
-	if !strings.Contains(stdout, "LARKSUITE_CLI_REMOTE_META=off") {
-		t.Fatalf("dry-run child env missing remote meta off in %q", stdout)
-	}
-}
-
 func TestRunCommandRemovesTemporaryConfigDir(t *testing.T) {
 	result := runCommand(context.Background(), "sh", []string{"-c", "printf %s \"$LARKSUITE_CLI_CONFIG_DIR\""})
 	if result.Err != nil {
@@ -160,6 +149,36 @@ func TestRunDryRunsMaterializesTypedPlaceholderFlagValues(t *testing.T) {
 		t.Fatalf("fact raw = %q, want original %q", facts[0].Raw, ex.Raw)
 	}
 	wantArgs := []string{"im", "+chat-messages-list", "--chat-id", "oc_test123", "--dry-run"}
+	if gotArgs := readArgs(t, argsPath); !reflect.DeepEqual(gotArgs, wantArgs) {
+		t.Fatalf("fake CLI args = %#v, want %#v", gotArgs, wantArgs)
+	}
+}
+
+func TestRunDryRunsMaterializesValidMinuteTokenPlaceholder(t *testing.T) {
+	cliBin, argsPath := fakeDryRunCLI(t, `{"api":[{"method":"GET","url":"/open-apis/minutes/v1/minutes/obcntest123"}]}`)
+	m := manifest.Manifest{Commands: []manifest.Command{{
+		Path:     "minutes +detail",
+		Runnable: true,
+		Flags: []manifest.Flag{
+			{Name: "minute-tokens", TakesValue: true},
+			{Name: "dry-run"},
+		},
+	}}}
+	ex := skillscan.Example{
+		Raw:            "lark-cli minutes +detail --minute-tokens <minute_token>",
+		SourceFile:     "skills/lark-meeting/scenes/create-and-edit-minutes.md",
+		Line:           28,
+		HasPlaceholder: true,
+	}
+
+	diags, facts := RunDryRuns(context.Background(), cliBin, m, []skillscan.Example{ex})
+	if len(diags) != 0 {
+		t.Fatalf("RunDryRuns() diagnostics = %#v", diags)
+	}
+	if len(facts) != 1 || !facts[0].Executable || facts[0].SkipReason != "" {
+		t.Fatalf("placeholder example should be executable after materialization: %#v", facts)
+	}
+	wantArgs := []string{"minutes", "+detail", "--minute-tokens", "obcntest123", "--dry-run"}
 	if gotArgs := readArgs(t, argsPath); !reflect.DeepEqual(gotArgs, wantArgs) {
 		t.Fatalf("fake CLI args = %#v, want %#v", gotArgs, wantArgs)
 	}

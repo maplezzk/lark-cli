@@ -51,7 +51,7 @@ var CellsClear = common.Shortcut{
 		if err != nil {
 			return err
 		}
-		sheetID, sheetName, err := resolveSheetSelector(runtime)
+		sheetID, sheetName, err := resolveSheetSelectorExec(ctx, runtime, token)
 		if err != nil {
 			return err
 		}
@@ -67,7 +67,7 @@ var CellsClear = common.Shortcut{
 		return nil
 	},
 	Tips: []string{
-		"high-risk-write — always preview with --dry-run; clear is not undoable.",
+		"high-risk-write — pass --yes to confirm (exit 10 without it), or preview with --dry-run first; clear is not undoable.",
 		"Can't delete an embedded pivot/chart by clearing cells — remove the object itself with +pivot-delete / +chart-delete.",
 	},
 }
@@ -156,7 +156,7 @@ func newMergeShortcut(command, desc, op string, withMergeType bool) common.Short
 			sheetID := strings.TrimSpace(runtime.Str("sheet-id"))
 			sheetName := strings.TrimSpace(runtime.Str("sheet-name"))
 			_, err = mergeInput(runtime, token, sheetID, sheetName, op, withMergeType)
-			return err
+			return deferMissingSheetSelector(runtime, sheetID, sheetName, err)
 		},
 		DryRun: func(ctx context.Context, runtime *common.RuntimeContext) *common.DryRunAPI {
 			token, _ := resolveSpreadsheetToken(runtime)
@@ -169,7 +169,7 @@ func newMergeShortcut(command, desc, op string, withMergeType bool) common.Short
 			if err != nil {
 				return err
 			}
-			sheetID, sheetName, err := resolveSheetSelector(runtime)
+			sheetID, sheetName, err := resolveSheetSelectorExec(ctx, runtime, token)
 			if err != nil {
 				return err
 			}
@@ -242,7 +242,7 @@ func mergeInput(runtime flagView, token, sheetID, sheetName, op string, withMerg
 var RowsResize = common.Shortcut{
 	Service:     "sheets",
 	Command:     "+rows-resize",
-	Description: "Resize rows in pixels: --range + --height <px> for one uniform height, --heights '{\"1\":50,\"2:20\":30,\"21\":\"auto\"}' for per-row heights in one atomic call, or --type standard/auto (--range is 1-based A1 like \"2:10\" or \"5\").",
+	Description: "Resize rows in pixels: --range + --height <px> for one uniform height, --heights '{\"1\":50,\"2:20\":30,\"21\":\"auto\"}' for per-row heights in one batch request, or --type standard/auto (--range is 1-based A1 like \"2:10\" or \"5\").",
 	Risk:        "write",
 	Scopes:      []string{"sheets:spreadsheet:write_only"},
 	AuthTypes:   []string{"user", "bot"},
@@ -260,15 +260,19 @@ var RowsResize = common.Shortcut{
 var ColsResize = common.Shortcut{
 	Service:     "sheets",
 	Command:     "+cols-resize",
-	Description: "Resize columns in pixels (NOT Excel char units): --range + --width <px> for one uniform width, --widths '{\"A\":100,\"C:E\":120}' for per-column widths in one atomic call, or --type standard to reset (--range is column letters like \"A:E\" or \"C\"; no auto for cols).",
+	Description: "Resize columns in pixels (NOT Excel char units): --range + --width <px> for one uniform width, --widths '{\"A\":100,\"C:E\":120}' for per-column widths in one batch request, or --type standard to reset (--range is column letters like \"A:E\" or \"C\"; no auto for cols).",
 	Risk:        "write",
 	Scopes:      []string{"sheets:spreadsheet:write_only"},
 	AuthTypes:   []string{"user", "bot"},
 	HasFormat:   true,
 	Flags:       flagsFor("+cols-resize"),
-	Validate:    validateViaResize("column"),
-	DryRun:      resizeDryRun("column"),
-	Execute:     resizeExecute("column"),
+	Tips: []string{
+		"Example: lark-cli sheets +cols-resize --url <URL> --sheet-name Sheet1 --range A:C --width 120",
+		`Different widths per column in one batch request: --widths '{"A":80,"C:E":120}'. Widths are pixels (px ≈ chars × 8 + 16), not Excel character units.`,
+	},
+	Validate: validateViaResize("column"),
+	DryRun:   resizeDryRun("column"),
+	Execute:  resizeExecute("column"),
 }
 
 // resizeDryRun / resizeExecute route a resize shortcut through resizeToolCall
@@ -289,7 +293,7 @@ func resizeExecute(dimension string) func(ctx context.Context, runtime *common.R
 		if err != nil {
 			return err
 		}
-		sheetID, sheetName, err := resolveSheetSelector(runtime)
+		sheetID, sheetName, err := resolveSheetSelectorExec(ctx, runtime, token)
 		if err != nil {
 			return err
 		}
@@ -317,7 +321,7 @@ func validateViaResize(dimension string) func(ctx context.Context, runtime *comm
 		sheetID := strings.TrimSpace(runtime.Str("sheet-id"))
 		sheetName := strings.TrimSpace(runtime.Str("sheet-name"))
 		_, _, err = resizeToolCall(runtime, token, sheetID, sheetName, dimension)
-		return err
+		return deferMissingSheetSelector(runtime, sheetID, sheetName, err)
 	}
 }
 
@@ -683,7 +687,7 @@ var RangeFill = common.Shortcut{
 		if err != nil {
 			return err
 		}
-		sheetID, sheetName, err := resolveSheetSelector(runtime)
+		sheetID, sheetName, err := resolveSheetSelectorExec(ctx, runtime, token)
 		if err != nil {
 			return err
 		}
@@ -722,7 +726,7 @@ var RangeSort = common.Shortcut{
 		if err != nil {
 			return err
 		}
-		sheetID, sheetName, err := resolveSheetSelector(runtime)
+		sheetID, sheetName, err := resolveSheetSelectorExec(ctx, runtime, token)
 		if err != nil {
 			return err
 		}
@@ -753,7 +757,7 @@ func validateRangeMoveOrCopy(op string, withPasteType bool) func(ctx context.Con
 		sheetID := strings.TrimSpace(runtime.Str("sheet-id"))
 		sheetName := strings.TrimSpace(runtime.Str("sheet-name"))
 		_, err = transformMoveCopyInput(runtime, token, sheetID, sheetName, op, withPasteType)
-		return err
+		return deferMissingSheetSelector(runtime, sheetID, sheetName, err)
 	}
 }
 
@@ -772,7 +776,7 @@ func transformExecuteFn(op string, withPasteType, _ bool) func(context.Context, 
 		if err != nil {
 			return err
 		}
-		sheetID, sheetName, err := resolveSheetSelector(runtime)
+		sheetID, sheetName, err := resolveSheetSelectorExec(ctx, runtime, token)
 		if err != nil {
 			return err
 		}

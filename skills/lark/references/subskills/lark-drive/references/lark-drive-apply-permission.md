@@ -1,7 +1,7 @@
 
 # drive +apply-permission（申请文档权限）
 
-> **前置条件：** 先阅读 [`../lark-shared/SKILL.md`](../../lark-shared/GUIDE.md) 了解认证、全局参数和安全规则。
+> **前置条件：** 先阅读 [`../../lark-shared/SKILL.md`](../../lark-shared/GUIDE.md) 了解认证、全局参数和安全规则。
 
 本 skill 对应 shortcut：`lark-cli drive +apply-permission`。
 
@@ -70,7 +70,7 @@ API 成功时返回空 `data`（仅 `code: 0, msg: "success"`），对应 CLI �
 
 ## 与 wiki URL 的关系
 
-传入 `/wiki/<node_token>` 时，shortcut 会直接用 `node_token` 作为路径参数并以 `type=wiki` 调用接口。如果需要先把 wiki 节点解析成 `obj_token`（例如想显式对底层 docx 申请），自行先调 `wiki spaces get_node` 拿 `obj_token + obj_type`，再用 bare token + `--type docx` 调本命令。
+传入 `/wiki/<node_token>` 时，shortcut 会直接用 `node_token` 作为路径参数并以 `type=wiki` 调用接口。如果需要先把 wiki 节点解析成 `obj_token`，自行先调用 [`wiki +node-get` shortcut](../../lark-wiki/references/lark-wiki-node-get.md) 拿 `obj_token + obj_type`，再用 bare `obj_token` + `--type <obj_type>` 调本命令。
 
 ## 参考
 

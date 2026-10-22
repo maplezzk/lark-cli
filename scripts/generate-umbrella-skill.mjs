@@ -12,6 +12,9 @@ const skillsRoot = path.join(repositoryRoot, "skills");
 const umbrellaRoot = path.join(skillsRoot, "lark");
 const referencesRoot = path.join(umbrellaRoot, "references");
 const outputRoot = path.join(referencesRoot, "subskills");
+// The suite archive wraps this repository Skill under references/lark/.
+const suiteArchivePrefix = "references/lark/references/subskills/";
+const maxTarPathBytes = 100;
 const routingPath = path.join(referencesRoot, "routing.md");
 const lockPath = path.join(referencesRoot, "source.lock.json");
 const domainsPath = path.join(repositoryRoot, "scripts", "umbrella-domains.json");
@@ -38,7 +41,17 @@ function sourceParts(sourcePath) {
 export function mirroredPath(sourcePath) {
   const [, skill, ...relative] = sourceParts(sourcePath);
   if (relative.at(-1) === "SKILL.md") relative[relative.length - 1] = "GUIDE.md";
-  return path.posix.join(skill, ...relative);
+  let target = path.posix.join(skill, ...relative);
+  if (Buffer.byteLength(suiteArchivePrefix + target) > maxTarPathBytes) {
+    if (relative[0] === "references") relative.shift();
+    const filename = relative.at(-1);
+    if (filename.startsWith(`${skill}-`)) relative[relative.length - 1] = filename.slice(skill.length + 1);
+    target = path.posix.join(skill, ...relative);
+  }
+  if (Buffer.byteLength(suiteArchivePrefix + target) > maxTarPathBytes) {
+    throw new Error(`Umbrella path exceeds suite archive limit: ${sourcePath}`);
+  }
+  return target;
 }
 
 function relativeTarget(sourcePath, linkedSourcePath) {
@@ -164,9 +177,12 @@ async function validateLocalLinks(root) {
 
 async function buildStaging(staging, sources) {
   const sourcePaths = new Set(sources.files.map(({ sourcePath }) => sourcePath));
+  const targetPaths = new Set();
   const records = [];
   for (const file of sources.files) {
     const targetPath = mirroredPath(file.sourcePath);
+    if (targetPaths.has(targetPath)) throw new Error(`Duplicate umbrella target path: ${targetPath}`);
+    targetPaths.add(targetPath);
     const output = path.extname(file.sourcePath).toLowerCase() === ".md"
       ? Buffer.from(rewriteLocalLinks(file.content.toString("utf8"), file.sourcePath, sourcePaths))
       : file.content;

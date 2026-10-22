@@ -4,27 +4,231 @@
 package cmdupdate
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/larksuite/cli/errs"
+	exttransport "github.com/larksuite/cli/extension/transport"
 	"github.com/larksuite/cli/internal/cmdutil"
 	"github.com/larksuite/cli/internal/core"
+	"github.com/larksuite/cli/internal/distribution"
 	"github.com/larksuite/cli/internal/output"
 	"github.com/larksuite/cli/internal/selfupdate"
 	"github.com/larksuite/cli/internal/skillscheck"
+	testurlrewrite "github.com/larksuite/cli/internal/testutil/urlrewrite"
 )
 
 const runLiveSkillsTestsEnv = "LARKSUITE_CLI_RUN_LIVE_SKILLS_TESTS"
+
+type updateManifestProvider struct {
+	manifestURL string
+	onResolve   func(context.Context)
+}
+
+func (p updateManifestProvider) Name() string { return "test-manifest" }
+func (p updateManifestProvider) ResolveInterceptor(context.Context) exttransport.Interceptor {
+	return nil
+}
+func (p updateManifestProvider) ResolveManifestURL(ctx context.Context) string {
+	if p.onResolve != nil {
+		p.onResolve(ctx)
+	}
+	return p.manifestURL
+}
+
+func useTestManifest(t *testing.T, server *httptest.Server, version string) {
+	t.Helper()
+	previousProvider, previousClient, previousVersion := exttransport.GetProvider(), distribution.DefaultClient, currentVersion
+	exttransport.Register(updateManifestProvider{manifestURL: server.URL + "/manifest.json"})
+	distribution.DefaultClient = server.Client()
+	currentVersion = func() string { return version }
+	t.Cleanup(func() {
+		exttransport.Register(previousProvider)
+		distribution.DefaultClient = previousClient
+		currentVersion = previousVersion
+	})
+}
+
+func TestUpdateCommandPreservesCancellationContext(t *testing.T) {
+	type contextKey struct{}
+	ctx := context.WithValue(context.Background(), contextKey{}, "command")
+	ctx, cancel := context.WithCancel(ctx)
+	cancel()
+	previousProvider := exttransport.GetProvider()
+	exttransport.Register(updateManifestProvider{
+		manifestURL: "://invalid",
+		onResolve: func(resolved context.Context) {
+			if resolved.Value(contextKey{}) != "command" || !errors.Is(resolved.Err(), context.Canceled) {
+				t.Error("distribution provider did not receive the command context")
+			}
+		},
+	})
+	t.Cleanup(func() { exttransport.Register(previousProvider) })
+
+	factory, _, _ := newTestFactory(t)
+	cmd := NewCmdUpdate(factory)
+	cmd.SetContext(ctx)
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("update succeeded with an invalid manifest URL")
+	}
+}
+
+func TestManifestCheckAcceptsHTTPAndReportsOpaqueDowngradeTarget(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("LARKSUITE_CLI_CONFIG_DIR", configDir)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"schema":1,"version":"older-channel","artifacts":{"skills":{"url":"https://dist.example/skills","checksum":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},%q:{"url":"https://dist.example/binary","checksum":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}}`, runtime.GOOS+"-"+runtime.GOARCH)
+	}))
+	defer server.Close()
+	useTestManifest(t, server, "newer-channel")
+	src, sourceErr := distribution.ResolveSource(context.Background())
+	if sourceErr != nil {
+		t.Fatal(sourceErr)
+	}
+	oldCheckedAt := time.Now().Add(-time.Hour).Unix()
+	oldState := fmt.Sprintf(`{"latest_version":"stale-target","checked_at":%d,"source":%q}`, oldCheckedAt, src.Identity())
+	if err := os.WriteFile(filepath.Join(configDir, "update-state.json"), []byte(oldState), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	factory, stdout, _ := newTestFactory(t)
+	err := updateRunWithContext(context.Background(), &UpdateOptions{Factory: factory, JSON: true, Check: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["action"] != "update_available" || got["target_version"] != "older-channel" || got["source"] != "manifest" {
+		t.Fatalf("output = %#v", got)
+	}
+	if _, exists := got["latest_version"]; exists {
+		t.Fatalf("manifest output must not label an arbitrary target as latest: %#v", got)
+	}
+	stateData, err := os.ReadFile(filepath.Join(configDir, "update-state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state struct {
+		LatestVersion string `json:"latest_version"`
+		CheckedAt     int64  `json:"checked_at"`
+		Source        string `json:"source"`
+	}
+	if err := json.Unmarshal(stateData, &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.LatestVersion != "older-channel" || state.Source != src.Identity() || state.CheckedAt <= oldCheckedAt {
+		t.Fatalf("cache = %#v, want refreshed manifest target", state)
+	}
+}
+
+func TestManifestArtifactProtocolFailureUsesNetworkTaxonomy(t *testing.T) {
+	t.Setenv("LARKSUITE_CLI_CONFIG_DIR", t.TempDir())
+	payload := []byte("not an archive")
+	digest := fmt.Sprintf("sha256:%x", sha256.Sum256(payload))
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/manifest.json" {
+			_, _ = w.Write(payload)
+			return
+		}
+		artifactURL := server.URL + "/artifact"
+		fmt.Fprintf(w, `{"schema":1,"version":"target","artifacts":{"skills":{"url":%q,"checksum":%q},%q:{"url":%q,"checksum":%q}}}`,
+			artifactURL, digest, distribution.CurrentPlatformKey(), artifactURL, digest)
+	}))
+	defer server.Close()
+
+	useTestManifest(t, server, "current")
+
+	factory, stdout, _ := newTestFactory(t)
+	if err := updateRunWithContext(context.Background(), &UpdateOptions{Factory: factory, JSON: true}); err == nil {
+		t.Fatal("update succeeded")
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	problem, _ := got["error"].(map[string]interface{})
+	if problem["type"] != "network" {
+		t.Fatalf("output = %#v", got)
+	}
+}
+
+func TestManifestUpdateRepairsSkillsWhenBinaryMatches(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	t.Setenv("USERPROFILE", root)
+	t.Setenv("CODEX_HOME", filepath.Join(root, "codex"))
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(root, "claude"))
+	configDir := filepath.Join(root, "config")
+	t.Setenv("LARKSUITE_CLI_CONFIG_DIR", configDir)
+	var archive bytes.Buffer
+	writer := zip.NewWriter(&archive)
+	entry, err := writer.Create("lark-approval/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := entry.Write([]byte("repaired")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	digest := fmt.Sprintf("sha256:%x", sha256.Sum256(archive.Bytes()))
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/skills.zip" {
+			_, _ = w.Write(archive.Bytes())
+			return
+		}
+		fmt.Fprintf(w, `{"schema":1,"version":"same","artifacts":{"skills":{"url":%q,"checksum":%q},%q:{"url":%q,"checksum":%q}}}`,
+			server.URL+"/skills.zip", digest, distribution.CurrentPlatformKey(), server.URL+"/unused.zip", digest)
+	}))
+	defer server.Close()
+	useTestManifest(t, server, "same")
+
+	factory, _, _ := newTestFactory(t)
+	if err := updateRunWithContext(context.Background(), &UpdateOptions{Factory: factory, JSON: true}); err != nil {
+		t.Fatal(err)
+	}
+	stateData, err := os.ReadFile(filepath.Join(configDir, "update-state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(stateData), `"latest_version":"same"`) {
+		t.Fatalf("cache = %s, want same-version manifest target", stateData)
+	}
+	skillDir := filepath.Join(root, ".agents", "skills", "lark-approval")
+	if err := os.RemoveAll(skillDir); err != nil {
+		t.Fatal(err)
+	}
+
+	factory, stdout, _ := newTestFactory(t)
+	if err := updateRunWithContext(context.Background(), &UpdateOptions{Factory: factory, JSON: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(filepath.Join(skillDir, "SKILL.md")); err != nil || string(got) != "repaired" {
+		t.Fatalf("repaired Skill = %q, %v", got, err)
+	}
+	if !strings.Contains(stdout.String(), `"skills_action": "synced"`) {
+		t.Fatalf("output = %s", stdout.String())
+	}
+}
 
 // newTestFactory creates a test factory with minimal config.
 func newTestFactory(t *testing.T) (*cmdutil.Factory, *bytes.Buffer, *bytes.Buffer) {
@@ -89,7 +293,7 @@ func mockDetectAndPnpm(t *testing.T, result selfupdate.DetectResult, pnpmFn func
 func successfulSkillsIndexFetch() func() *selfupdate.NpmResult {
 	return func() *selfupdate.NpmResult {
 		r := &selfupdate.NpmResult{}
-		r.Stdout.WriteString(`{"skills":[{"name":"lark-calendar"},{"name":"lark-mail"}]}`)
+		r.Stdout.WriteString(`{"skills":[{"name":"lark-calendar","type":"archive","url":"./lark-calendar.tar.gz","digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},{"name":"lark-mail","type":"archive","url":"./lark-mail.tar.gz","digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]}`)
 		return r
 	}
 }
@@ -108,6 +312,22 @@ func successfulSkillsCommand() func(args ...string) *selfupdate.NpmResult {
 		}
 		return r
 	}
+}
+
+func skillsFailureUpdater(detect selfupdate.DetectResult) *selfupdate.Updater {
+	u := selfupdate.New()
+	u.DetectOverride = func() selfupdate.DetectResult { return detect }
+	u.NpmInstallOverride = func(string) *selfupdate.NpmResult { return &selfupdate.NpmResult{} }
+	u.VerifyOverride = func(string) error { return nil }
+	u.SkillsIndexFetchOverride = func() *selfupdate.NpmResult {
+		return &selfupdate.NpmResult{Err: fmt.Errorf("index unavailable")}
+	}
+	u.SkillsCommandOverride = func(args ...string) *selfupdate.NpmResult {
+		r := &selfupdate.NpmResult{Err: fmt.Errorf("exit status 127")}
+		r.Stderr.WriteString("npx: command not found")
+		return r
+	}
+	return u
 }
 
 func mockSkillsSync(t *testing.T) {
@@ -223,25 +443,6 @@ func TestUpdatePnpm_Unavailable_ManualFallback(t *testing.T) {
 	}
 	if !strings.Contains(out, "pnpm add -g") {
 		t.Errorf("expected pnpm add -g hint, got: %s", out)
-	}
-}
-
-func TestNormalizeVersion(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{input: "1.2.3", want: "1.2.3"},
-		{input: "v1.2.3", want: "1.2.3"},
-		{input: "V1.2.3", want: "1.2.3"},
-		{input: " v1.2.3 ", want: "1.2.3"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			if got := normalizeVersion(tt.input); got != tt.want {
-				t.Fatalf("normalizeVersion(%q) = %q, want %q", tt.input, got, tt.want)
-			}
-		})
 	}
 }
 
@@ -556,7 +757,7 @@ func TestReportError(t *testing.T) {
 
 	t.Run("json mode prints envelope and exits bare with typed code", func(t *testing.T) {
 		f, stdout, _ := newTestFactory(t)
-		typed := errs.NewNetworkError(errs.SubtypeNetworkTransport, "failed to check latest version: timeout")
+		typed := errs.NewNetworkError(errs.SubtypeNetworkTransport, "failed to check latest version: timeout").WithHint("Check connectivity and retry.")
 		err := reportError(&UpdateOptions{JSON: true}, f.IOStreams, "network", typed)
 		var bareErr *output.BareError
 		if !errors.As(err, &bareErr) {
@@ -571,6 +772,12 @@ func TestReportError(t *testing.T) {
 		}
 		if !strings.Contains(out, "failed to check latest version: timeout") {
 			t.Errorf("JSON envelope missing message, got: %s", out)
+		}
+		var envelope struct {
+			Error struct{ Hint string } `json:"error"`
+		}
+		if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil || envelope.Error.Hint != typed.ProblemDetail().Hint {
+			t.Fatalf("JSON hint not preserved: %s (%v)", out, err)
 		}
 	})
 }
@@ -891,6 +1098,17 @@ func TestReleaseURL(t *testing.T) {
 	}
 }
 
+func TestResolvePresentationURLsRewrites(t *testing.T) {
+	testurlrewrite.Register(t, func(rawURL string) string {
+		return strings.Replace(rawURL, "github.com", "mirror.example.test", 1)
+	})
+
+	got := resolvePresentationURLs("2.0.0")
+	if got.release != "https://mirror.example.test/larksuite/cli/releases/tag/v2.0.0" || got.changelog != "https://mirror.example.test/larksuite/cli/blob/main/CHANGELOG.md" {
+		t.Fatalf("resolvePresentationURLs() = %#v", got)
+	}
+}
+
 func TestPermissionHint(t *testing.T) {
 	origOS := currentOS
 	defer func() { currentOS = origOS }()
@@ -1058,45 +1276,22 @@ func TestUpdateNpm_SkillsFail_JSON(t *testing.T) {
 
 	origNew := newUpdater
 	newUpdater = func() *selfupdate.Updater {
-		u := selfupdate.New()
-		u.DetectOverride = func() selfupdate.DetectResult {
-			return selfupdate.DetectResult{Method: selfupdate.InstallNpm, ResolvedPath: "/node_modules/@larksuite/cli/bin/lark-cli", NpmAvailable: true}
-		}
-		u.NpmInstallOverride = func(version string) *selfupdate.NpmResult { return &selfupdate.NpmResult{} }
-		u.VerifyOverride = func(string) error { return nil }
-		u.SkillsIndexFetchOverride = func() *selfupdate.NpmResult {
-			r := &selfupdate.NpmResult{}
-			r.Err = fmt.Errorf("index unavailable")
-			return r
-		}
-		u.SkillsCommandOverride = func(args ...string) *selfupdate.NpmResult {
-			r := &selfupdate.NpmResult{}
-			r.Stderr.WriteString("npx: command not found")
-			r.Err = fmt.Errorf("exit status 127")
-			return r
-		}
-		return u
+		return skillsFailureUpdater(selfupdate.DetectResult{Method: selfupdate.InstallNpm, ResolvedPath: "/node_modules/@larksuite/cli/bin/lark-cli", NpmAvailable: true})
 	}
 	defer func() { newUpdater = origNew }()
 
 	err := cmd.Execute()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected skills sync failure")
 	}
 	out := stdout.String()
-	// CLI update should still succeed (ok:true)
-	if !strings.Contains(out, `"ok": true`) {
-		t.Errorf("expected ok:true despite skills failure, got: %s", out)
-	}
-	if !strings.Contains(out, `"action": "updated"`) {
-		t.Errorf("expected action:updated despite skills failure, got: %s", out)
-	}
-	// Should have skills_warning with detail
-	if !strings.Contains(out, "skills_warning") {
-		t.Errorf("expected skills_warning in output, got: %s", out)
-	}
-	if !strings.Contains(out, "skills_summary") {
-		t.Errorf("expected skills_summary in output, got: %s", out)
+	for _, want := range []string{
+		`"ok": false`, `"type": "skills_update_error"`, `"action": "updated"`,
+		`"previous_version": "1.0.0"`, `"current_version": "2.0.0"`, `"skills_action": "failed"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %s in partial update output, got: %s", want, out)
+		}
 	}
 }
 
@@ -1115,42 +1310,79 @@ func TestUpdateNpm_SkillsFail_Human(t *testing.T) {
 
 	origNew := newUpdater
 	newUpdater = func() *selfupdate.Updater {
-		u := selfupdate.New()
-		u.DetectOverride = func() selfupdate.DetectResult {
-			return selfupdate.DetectResult{Method: selfupdate.InstallNpm, ResolvedPath: "/node_modules/@larksuite/cli/bin/lark-cli", NpmAvailable: true}
-		}
-		u.NpmInstallOverride = func(version string) *selfupdate.NpmResult { return &selfupdate.NpmResult{} }
-		u.VerifyOverride = func(string) error { return nil }
-		u.SkillsIndexFetchOverride = func() *selfupdate.NpmResult {
-			r := &selfupdate.NpmResult{}
-			r.Err = fmt.Errorf("index unavailable")
-			return r
-		}
-		u.SkillsCommandOverride = func(args ...string) *selfupdate.NpmResult {
-			r := &selfupdate.NpmResult{}
-			r.Stderr.WriteString("npx: command not found")
-			r.Err = fmt.Errorf("exit status 127")
-			return r
-		}
-		return u
+		return skillsFailureUpdater(selfupdate.DetectResult{Method: selfupdate.InstallNpm, ResolvedPath: "/node_modules/@larksuite/cli/bin/lark-cli", NpmAvailable: true})
 	}
 	defer func() { newUpdater = origNew }()
 
 	err := cmd.Execute()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "skills update failed") {
+		t.Fatalf("error = %v, want skills update failure", err)
+	}
+	if !strings.Contains(stderr.String(), "lark-cli binary updated from 1.0.0 to 2.0.0") {
+		t.Errorf("must report the completed binary update before the skills error: %s", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "Successfully updated") {
+		t.Errorf("must not report full success after skills failure: %s", stderr.String())
+	}
+}
+
+func TestUpdateManual_SkillsFail_JSONStillReportsManualUpdate(t *testing.T) {
+	t.Setenv("LARKSUITE_CLI_CONFIG_DIR", t.TempDir())
+	f, stdout, _ := newTestFactory(t)
+	cmd := NewCmdUpdate(f)
+	cmd.SetArgs([]string{"--json"})
+
+	origFetch := fetchLatest
+	fetchLatest = func() (string, error) { return "2.0.0", nil }
+	defer func() { fetchLatest = origFetch }()
+	origVersion := currentVersion
+	currentVersion = func() string { return "1.0.0" }
+	defer func() { currentVersion = origVersion }()
+	origNew := newUpdater
+	newUpdater = func() *selfupdate.Updater {
+		return skillsFailureUpdater(selfupdate.DetectResult{Method: selfupdate.InstallManual, ResolvedPath: "/usr/local/bin/lark-cli"})
+	}
+	defer func() { newUpdater = origNew }()
+
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected skills sync failure")
+	}
+	out := stdout.String()
+	for _, want := range []string{
+		`"ok": false`, `"type": "skills_update_error"`, `"action": "manual_required"`,
+		`"previous_version": "1.0.0"`, `"latest_version": "2.0.0"`, `"skills_action": "failed"`,
+		"releases/tag/v2.0.0",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %s in manual update output, got: %s", want, out)
+		}
+	}
+}
+
+func TestUpdateManual_SkillsFail_HumanStillReportsManualUpdate(t *testing.T) {
+	t.Setenv("LARKSUITE_CLI_CONFIG_DIR", t.TempDir())
+	f, _, stderr := newTestFactory(t)
+	cmd := NewCmdUpdate(f)
+
+	origFetch := fetchLatest
+	fetchLatest = func() (string, error) { return "2.0.0", nil }
+	defer func() { fetchLatest = origFetch }()
+	origVersion := currentVersion
+	currentVersion = func() string { return "1.0.0" }
+	defer func() { currentVersion = origVersion }()
+	origNew := newUpdater
+	newUpdater = func() *selfupdate.Updater {
+		return skillsFailureUpdater(selfupdate.DetectResult{Method: selfupdate.InstallManual, ResolvedPath: "/usr/local/bin/lark-cli"})
+	}
+	defer func() { newUpdater = origNew }()
+
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "skills update failed") {
+		t.Fatalf("error = %v, want skills update failure", err)
 	}
 	out := stderr.String()
-	// CLI update should still show success
-	if !strings.Contains(out, "Successfully updated") {
-		t.Errorf("expected CLI success message, got: %s", out)
-	}
-	// Skills warning should be shown
-	if !strings.Contains(out, "Skills update failed") {
-		t.Errorf("expected skills failure warning, got: %s", out)
-	}
-	if !strings.Contains(out, "lark-cli update --force") {
-		t.Errorf("expected force retry hint, got: %s", out)
+	if !strings.Contains(out, "Automatic update unavailable") || !strings.Contains(out, "releases/tag/v2.0.0") {
+		t.Errorf("must report manual update instructions before the skills error: %s", out)
 	}
 }
 
@@ -1171,12 +1403,125 @@ func TestRunSkillsAndState_DedupHit(t *testing.T) {
 			return &selfupdate.NpmResult{}
 		},
 	}
-	got := runSkillsAndState(updater, newTestIO(), "1.0.21", false)
+	got := runSkillsAndState(updater, newTestIO(), "1.0.21", false, "")
 	if got != nil {
 		t.Errorf("runSkillsAndState() = %+v, want nil for dedup hit", got)
 	}
 	if called {
 		t.Error("SkillsCommandOverride called, want skipped due to dedup")
+	}
+}
+
+func TestRunSkillsAndState_RequestedLayoutBypassesVersionDedup(t *testing.T) {
+	t.Setenv("LARKSUITE_CLI_CONFIG_DIR", t.TempDir())
+	if err := skillscheck.WriteState(skillscheck.SkillsState{Version: "1.0.21", Layout: skillscheck.LayoutSeparate}); err != nil {
+		t.Fatal(err)
+	}
+	originalSync := syncSkills
+	defer func() { syncSkills = originalSync }()
+	called := false
+	syncSkills = func(opts skillscheck.SyncOptions) *skillscheck.SyncResult {
+		called = true
+		if opts.Layout != skillscheck.LayoutSuite {
+			t.Fatalf("layout = %q, want suite", opts.Layout)
+		}
+		return &skillscheck.SyncResult{Action: "synced", Layout: skillscheck.LayoutSuite}
+	}
+
+	got := runSkillsAndState(&selfupdate.Updater{}, newTestIO(), "1.0.21", false, "suite")
+	if !called || got == nil || got.Err != nil {
+		t.Fatalf("runSkillsAndState() = %+v, called = %v", got, called)
+	}
+}
+
+func TestRunSkillsAndState_UnknownOfficialSkillsBypassesVersionDedup(t *testing.T) {
+	t.Setenv("LARKSUITE_CLI_CONFIG_DIR", t.TempDir())
+	if err := skillscheck.WriteState(skillscheck.SkillsState{
+		Version:               "1.0.21",
+		Layout:                skillscheck.LayoutSeparate,
+		OfficialSkillsUnknown: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	originalSync := syncSkills
+	defer func() { syncSkills = originalSync }()
+	called := false
+	syncSkills = func(opts skillscheck.SyncOptions) *skillscheck.SyncResult {
+		called = true
+		return &skillscheck.SyncResult{Action: "synced", Layout: skillscheck.LayoutSeparate}
+	}
+
+	got := runSkillsAndState(&selfupdate.Updater{}, newTestIO(), "1.0.21", false, "")
+	if !called || got == nil || got.Err != nil {
+		t.Fatalf("runSkillsAndState() = %+v, called = %v", got, called)
+	}
+}
+
+func TestRunSkillsAndState_ManifestSourceBypassesVersionDedup(t *testing.T) {
+	t.Setenv("LARKSUITE_CLI_CONFIG_DIR", t.TempDir())
+	if err := skillscheck.WriteState(skillscheck.SkillsState{
+		Version:        "1.0.21",
+		SourceIdentity: "manifest:test",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	originalSync := syncSkills
+	t.Cleanup(func() { syncSkills = originalSync })
+	called := false
+	syncSkills = func(skillscheck.SyncOptions) *skillscheck.SyncResult {
+		called = true
+		return &skillscheck.SyncResult{Action: "synced"}
+	}
+	if got := runSkillsAndState(&selfupdate.Updater{}, newTestIO(), "1.0.21", false, ""); !called || got == nil {
+		t.Fatalf("runSkillsAndState() = %+v, called = %v", got, called)
+	}
+}
+
+func TestSkillsSummaryMarksUnknownOfficialSkills(t *testing.T) {
+	summary := skillsSummary(&skillscheck.SyncResult{
+		Layout:          skillscheck.LayoutSeparate,
+		OfficialUnknown: true,
+	})
+	if summary["official_unknown"] != true {
+		t.Fatalf("summary = %+v, want official_unknown=true", summary)
+	}
+	if _, ok := summary["official"]; ok {
+		t.Fatalf("summary = %+v, official count must be omitted when unknown", summary)
+	}
+}
+
+func TestUpdateRejectsInvalidSkillsLayout(t *testing.T) {
+	f, _, _ := newTestFactory(t)
+	cmd := NewCmdUpdate(f)
+	cmd.SetArgs([]string{"--skills-layout", "hybrid"})
+	err := cmd.Execute()
+	problem, ok := errs.ProblemOf(err)
+	var validation *errs.ValidationError
+	if !ok || problem.Subtype != errs.SubtypeInvalidArgument || !errors.As(err, &validation) || validation.Param != "--skills-layout" {
+		t.Fatalf("problem = %+v, ok = %v", problem, ok)
+	}
+}
+
+func TestUpdateCheckRejectsSkillsLayoutBeforeNetwork(t *testing.T) {
+	f, _, _ := newTestFactory(t)
+	origFetch := fetchLatest
+	fetched := false
+	fetchLatest = func() (string, error) {
+		fetched = true
+		return "2.0.0", nil
+	}
+	t.Cleanup(func() { fetchLatest = origFetch })
+
+	cmd := NewCmdUpdate(f)
+	cmd.SetArgs([]string{"--check", "--skills-layout", "suite"})
+	err := cmd.Execute()
+	problem, ok := errs.ProblemOf(err)
+	var validation *errs.ValidationError
+	if !ok || problem.Subtype != errs.SubtypeInvalidArgument || !errors.As(err, &validation) || validation.Param != "--skills-layout" {
+		t.Fatalf("problem = %+v, ok = %v", problem, ok)
+	}
+	if fetched {
+		t.Fatal("fetchLatest was called before incompatible flags were rejected")
 	}
 }
 
@@ -1193,7 +1538,7 @@ func TestRunSkillsAndState_DedupForceBypass(t *testing.T) {
 			return successfulSkillsCommand()(args...)
 		},
 	}
-	got := runSkillsAndState(updater, newTestIO(), "1.0.21", true)
+	got := runSkillsAndState(updater, newTestIO(), "1.0.21", true, "")
 	if got == nil || got.Err != nil {
 		t.Fatalf("runSkillsAndState(force=true) = %+v, want successful result", got)
 	}
@@ -1208,7 +1553,7 @@ func TestRunSkillsAndState_SuccessWritesState(t *testing.T) {
 		SkillsIndexFetchOverride: successfulSkillsIndexFetch(),
 		SkillsCommandOverride:    successfulSkillsCommand(),
 	}
-	got := runSkillsAndState(updater, newTestIO(), "1.0.21", false)
+	got := runSkillsAndState(updater, newTestIO(), "1.0.21", false, "")
 	if got == nil || got.Err != nil {
 		t.Fatalf("runSkillsAndState() = %+v, want non-nil with nil Err", got)
 	}
@@ -1234,7 +1579,7 @@ func TestRunSkillsAndState_FailureKeepsOldState(t *testing.T) {
 			return r
 		},
 	}
-	got := runSkillsAndState(updater, newTestIO(), "1.0.21", false)
+	got := runSkillsAndState(updater, newTestIO(), "1.0.21", false, "")
 	if got == nil || got.Err == nil {
 		t.Fatalf("runSkillsAndState() = %+v, want non-nil with non-nil Err", got)
 	}
@@ -1724,7 +2069,7 @@ func TestRunSkillsAndState_StateWriteFailureWarns(t *testing.T) {
 	t.Cleanup(func() { syncSkills = origSync })
 
 	f, _, stderr := newTestFactory(t)
-	got := runSkillsAndState(&selfupdate.Updater{}, f.IOStreams, "1.0.21", false)
+	got := runSkillsAndState(&selfupdate.Updater{}, f.IOStreams, "1.0.21", false, "")
 	if got == nil || got.Err == nil {
 		t.Fatalf("runSkillsAndState() = %+v, want non-nil with write error", got)
 	}
@@ -1823,9 +2168,9 @@ func TestPrepareLiveSkillsIntegration(t *testing.T) {
 	})
 }
 
-// seedLiveSkillsGlobal verifies the real npx skills CLI is reachable, installs
-// lark-calendar into the isolated global skills dir, and returns the parsed
-// global skills list. The caller opted in explicitly, so every missing
+// seedLiveSkillsGlobal verifies the real npx skills CLI and the v0.2 source are
+// reachable, installs lark-calendar into the isolated global skills dir, and
+// returns the parsed global skills list. The caller opted in explicitly, so every missing
 // precondition is a hard failure — skipping would report "nothing verified"
 // as a green run.
 func seedLiveSkillsGlobal(t *testing.T) []string {
@@ -1838,10 +2183,10 @@ func seedLiveSkillsGlobal(t *testing.T) []string {
 	// the generous side.
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
-	if err := exec.CommandContext(ctx, "npx", "-y", "skills", "add", "https://open.feishu.cn", "--list").Run(); err != nil {
+	if err := exec.CommandContext(ctx, "npx", "-y", "skills", "add", "https://open.feishu.cn/lark-cli/skills/regular", "--list").Run(); err != nil {
 		t.Fatalf("live skills tests opted in but real skills CLI unavailable: %v", err)
 	}
-	if err := exec.CommandContext(ctx, "npx", "-y", "skills", "add", "https://open.feishu.cn", "-s", "lark-calendar", "-g", "-y").Run(); err != nil {
+	if err := exec.CommandContext(ctx, "npx", "-y", "skills", "add", "https://open.feishu.cn/lark-cli/skills/regular", "-s", "lark-calendar", "-g", "-y").Run(); err != nil {
 		t.Fatalf("failed to seed isolated global skills: %v", err)
 	}
 	globalOut, err := exec.CommandContext(ctx, "npx", "-y", "skills", "ls", "-g").Output()
@@ -2116,5 +2461,83 @@ func TestResolveSkillsBrand_RespectsActiveProfile(t *testing.T) {
 	}
 	if errBuf.Len() != 0 {
 		t.Errorf("unexpected notice: %q", errBuf.String())
+	}
+}
+
+func TestUpdateSkipSkillsRejectsIncompatibleSourcesBeforeNetwork(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		layout   string
+		manifest bool
+		param    string
+	}{
+		{name: "layout", layout: "suite", param: "--skills-layout"},
+		{name: "manifest", manifest: true, param: "--skip-skills"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("LARKSUITE_CLI_CONFIG_DIR", t.TempDir())
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Error("incompatible flags reached the manifest transport")
+				http.Error(w, "unexpected request", http.StatusInternalServerError)
+			}))
+			defer server.Close()
+			if tc.manifest {
+				useTestManifest(t, server, "same")
+			}
+			previousFetch := fetchLatest
+			fetchLatest = func() (string, error) {
+				t.Error("incompatible flags reached the registry transport")
+				return "1.0.0", nil
+			}
+			t.Cleanup(func() { fetchLatest = previousFetch })
+			factory, _, _ := newTestFactory(t)
+			command := NewCmdUpdate(factory)
+			args := []string{"--skip-skills"}
+			if tc.layout != "" {
+				args = append(args, "--skills-layout", tc.layout)
+			}
+			command.SetArgs(args)
+			err := command.Execute()
+			problem, ok := errs.ProblemOf(err)
+			var validation *errs.ValidationError
+			if !ok || problem.Subtype != errs.SubtypeInvalidArgument || !errors.As(err, &validation) || validation.Param != tc.param {
+				t.Fatalf("problem = %+v, error = %v, want invalid argument %s", problem, err, tc.param)
+			}
+		})
+	}
+}
+
+func TestManifestCheckAllowsSkipSkillsWithoutInstalling(t *testing.T) {
+	t.Setenv("LARKSUITE_CLI_CONFIG_DIR", t.TempDir())
+	var artifactRequests atomic.Int32
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/manifest.json" {
+			artifactRequests.Add(1)
+			http.Error(w, "check must not fetch artifacts", http.StatusInternalServerError)
+			return
+		}
+		fmt.Fprintf(w, `{"schema":1,"version":"next-channel","artifacts":{"skills":{"url":%q,"checksum":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},%q:{"url":%q,"checksum":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}}`, server.URL+"/skills.zip", runtime.GOOS+"-"+runtime.GOARCH, server.URL+"/binary.zip")
+	}))
+	defer server.Close()
+	useTestManifest(t, server, "current-channel")
+	factory, stdout, _ := newTestFactory(t)
+	command := NewCmdUpdate(factory)
+	command.SetArgs([]string{"--json", "--check", "--skip-skills"})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]interface{}
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result["action"] != "update_available" || result["target_version"] != "next-channel" || result["auto_update"] != true {
+		t.Fatalf("check result = %+v", result)
+	}
+	if _, present := result["skills_action"]; present {
+		t.Fatalf("check reported Skills installation: %+v", result)
+	}
+	if artifactRequests.Load() != 0 {
+		t.Fatalf("check fetched %d artifacts", artifactRequests.Load())
 	}
 }

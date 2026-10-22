@@ -6,9 +6,9 @@
 
 阅读顺序固定如下：
 
-1. [`lark-approval-initiate.md`](lark-approval-initiate.md) 中的创建请求参数、节点参数和返回结果说明
+1. [`lark-approval-initiate.md`](references/lark-approval-initiate.md) 中的创建请求参数、节点参数和返回结果说明
 2. `approval approvals get` 返回的 `form` / `node_list`
-3. [`lark-approval-instance-form-control-parameters.md`](lark-approval-instance-form-control-parameters.md)
+3. [`lark-approval-instance-form-control-parameters.md`](instance-form-control-parameters.md)
 4. 本文
 
 ## 总原则
@@ -16,7 +16,7 @@
 - `lark-approval-initiate.md` 决定创建请求字段名、字段层级、节点参数结构。
 - `approvals.get.form` 决定控件 `id`、`type`、选项值范围、子控件结构。
 - `approvals.get.node_list` 决定节点 key、是否必须补审批人、是否允许多人。
-- [`lark-approval-instance-form-control-parameters.md`](lark-approval-instance-form-control-parameters.md) 决定各控件 `value` 的最终结构。
+- [`lark-approval-instance-form-control-parameters.md`](instance-form-control-parameters.md) 决定各控件 `value` 的最终结构。
 - 除非本文明确允许，否则不要猜值来源，不要把展示文案直接当成可提交值。
 
 ## 默认来源
@@ -72,7 +72,7 @@
 
 ## 特殊控件组
 
-以下控件组的结构仍按 [`lark-approval-instance-form-control-parameters.md`](lark-approval-instance-form-control-parameters.md) 组装：
+以下控件组的结构仍按 [`lark-approval-instance-form-control-parameters.md`](instance-form-control-parameters.md) 组装：
 
 - `leaveGroupV2`
 - `workGroup`

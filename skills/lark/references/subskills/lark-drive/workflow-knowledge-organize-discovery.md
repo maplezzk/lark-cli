@@ -8,11 +8,11 @@ This file owns target parsing, scope clarification, resource inventory, Resource
 
 Before executing rules in this file:
 
-1. Follow [`../../lark-shared/SKILL.md`](../../lark-shared/GUIDE.md) for identity, auth, and permission handling.
-2. For Wiki / personal library targets, follow [`../../lark-wiki/SKILL.md`](../../lark-wiki/GUIDE.md).
-3. For Drive folder inventory, follow [`lark-drive-files-list.md`](lark-drive-files-list.md).
-4. For Drive search targets, follow [`lark-drive-search.md`](lark-drive-search.md).
-5. For URL / token inspection, follow [`lark-drive-inspect.md`](lark-drive-inspect.md) and [`../../lark-wiki/references/lark-wiki-node-get.md`](../../lark-wiki/references/lark-wiki-node-get.md).
+1. Follow [`../../lark-shared/SKILL.md`](../lark-shared/GUIDE.md) for identity, auth, and permission handling.
+2. For Wiki / personal library targets, follow [`../../lark-wiki/SKILL.md`](../lark-wiki/GUIDE.md).
+3. For Drive folder inventory, follow [`lark-drive-files-list.md`](references/lark-drive-files-list.md).
+4. For Drive search targets, follow [`lark-drive-search.md`](references/lark-drive-search.md).
+5. For URL / token inspection, follow [`lark-drive-inspect.md`](references/lark-drive-inspect.md) and [`../../lark-wiki/references/lark-wiki-node-get.md`](../lark-wiki/references/lark-wiki-node-get.md).
 
 ## State: PARSE_SCOPE
 
@@ -155,14 +155,14 @@ Example:
 
 ### Wiki Inventory Rules
 
-1. Follow [`../../lark-wiki/references/lark-wiki-node-list.md`](../../lark-wiki/references/lark-wiki-node-list.md) traversal semantics.
+1. Follow [`../../lark-wiki/references/lark-wiki-node-list.md`](../lark-wiki/references/lark-wiki-node-list.md) traversal semantics.
 2. Generate stable paths from parent-child traversal.
 3. Preserve Wiki node identity fields needed by `ResourceItem`.
 4. Treat `my_library` as Wiki personal library, not Drive root.
 
 ### Drive Inventory Rules
 
-1. Use `drive files list` according to [`lark-drive-files-list.md`](lark-drive-files-list.md); its schema path is `drive.files.list`.
+1. Use `drive files list` according to [`lark-drive-files-list.md`](references/lark-drive-files-list.md); its schema path is `drive.files.list`.
 2. Use the same Drive folder-tree traversal for Drive root and ordinary folders after the first request. Drive root differs only for the first-level request: it uses omitted or empty `folder_token`, does not support pagination, and does not return root-level shortcuts according to schema; returned child folders MUST still be listed by their own folder tokens like ordinary folders, and those ordinary folder lists may return `type=shortcut` entries. For a Drive root target, record this root-level shortcut coverage caveat, set `partial=true` only if the user requested full root-level shortcut coverage or root pagination cannot continue, and do not claim root-level shortcut coverage as complete.
 3. Recurse only into `folder` items within the confirmed scope.
 4. For each directory, continue pages manually by feeding the returned `next_page_token` into request param `page_token`. Do not rely on `--page-all` for inventory.

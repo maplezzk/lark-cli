@@ -4,7 +4,7 @@ Workflow id: `topic_move_collector`
 
 Risk / Structure: `R2-R3` / `S3`
 
-本文档实现已注册的主题资料收集 workflow。执行前必须先阅读 [`lark-drive-workflow.md`](lark-drive-workflow.md) 和 [`../../lark-shared/SKILL.md`](../../lark-shared/GUIDE.md)，并遵循共享执行协议、Artifact Contract、Workflow Loading、认证和写入确认规则。
+本文档实现已注册的主题资料收集 workflow。执行前必须先阅读 [`lark-drive-workflow.md`](references/lark-drive-workflow.md) 和 [`../../lark-shared/SKILL.md`](../lark-shared/GUIDE.md)，并遵循共享执行协议、Artifact Contract、Workflow Loading、认证和写入确认规则。
 
 本文档负责定义本 workflow 的全局约束、状态机和渐进加载关系。具体阶段规则放在配套文档中，只有进入对应状态时才加载。
 
@@ -12,15 +12,15 @@ Risk / Structure: `R2-R3` / `S3`
 
 ## 必读上下文
 
-执行本 workflow 前，必须先阅读 [`../../lark-shared/SKILL.md`](../../lark-shared/GUIDE.md)，用于处理身份、认证、权限和写操作确认规则。
+执行本 workflow 前，必须先阅读 [`../../lark-shared/SKILL.md`](../lark-shared/GUIDE.md)，用于处理身份、认证、权限和写操作确认规则。
 
 按阶段渐进加载其他 skill / 引用文档：
 
-- 目标是 Wiki 或个人文档库：[`../../lark-wiki/SKILL.md`](../../lark-wiki/GUIDE.md)
-- 需要读取文档内容：[`../../lark-doc/SKILL.md`](../../lark-doc/GUIDE.md) 和 [`../../lark-doc/references/lark-doc-fetch.md`](../../lark-doc/references/lark-doc-fetch.md)
-- 需要验证 Sheet 内容：[`../../lark-sheets/SKILL.md`](../../lark-sheets/GUIDE.md)
-- 需要 Drive 搜索：[`lark-drive-search.md`](lark-drive-search.md)
-- 需要资源解析：[`lark-drive-inspect.md`](lark-drive-inspect.md)
+- 目标是 Wiki 或个人文档库：[`../../lark-wiki/SKILL.md`](../lark-wiki/GUIDE.md)
+- 需要读取文档内容：[`../../lark-doc/SKILL.md`](../lark-doc/GUIDE.md) 和 [`../../lark-doc/references/lark-doc-fetch.md`](../lark-doc/references/lark-doc-fetch.md)
+- 需要验证 Sheet 内容：[`../../lark-sheets/SKILL.md`](../lark-sheets/GUIDE.md)
+- 需要 Drive 搜索：[`lark-drive-search.md`](references/lark-drive-search.md)
+- 需要资源解析：[`lark-drive-inspect.md`](references/lark-drive-inspect.md)
 
 ## 适用范围
 
@@ -166,11 +166,11 @@ Risk / Structure: `R2-R3` / `S3`
 
 | 状态 | 必读文档 |
 |-------|---------------|
-| `PARSE_INPUT` / `RESOLVE_TARGET` / `CONFIRM_CONTEXT` | [`lark-drive-workflow-topic-move-collector-setup.md`](lark-drive-workflow-topic-move-collector-setup.md) |
-| `SEARCH_RECALL` / `RECALL_ENHANCE` | [`lark-drive-workflow-topic-move-collector-recall.md`](lark-drive-workflow-topic-move-collector-recall.md) |
-| `RESOURCE_RESOLVE` / `CONTENT_VERIFY` | [`lark-drive-workflow-topic-move-collector-resolve-verify.md`](lark-drive-workflow-topic-move-collector-resolve-verify.md) |
-| `RELEVANCE_CLASSIFY` / `PLAN_MOVE` | [`lark-drive-workflow-topic-move-collector-review-plan.md`](lark-drive-workflow-topic-move-collector-review-plan.md) |
-| `CONFIRM_EXECUTION` / `EXECUTE` / `VERIFY` / `RESTORE` | [`lark-drive-workflow-topic-move-collector-execute.md`](lark-drive-workflow-topic-move-collector-execute.md) |
+| `PARSE_INPUT` / `RESOLVE_TARGET` / `CONFIRM_CONTEXT` | [`lark-drive-workflow-topic-move-collector-setup.md`](workflow-topic-move-collector-setup.md) |
+| `SEARCH_RECALL` / `RECALL_ENHANCE` | [`lark-drive-workflow-topic-move-collector-recall.md`](workflow-topic-move-collector-recall.md) |
+| `RESOURCE_RESOLVE` / `CONTENT_VERIFY` | [`lark-drive-workflow-topic-move-collector-resolve-verify.md`](workflow-topic-move-collector-resolve-verify.md) |
+| `RELEVANCE_CLASSIFY` / `PLAN_MOVE` | [`lark-drive-workflow-topic-move-collector-review-plan.md`](workflow-topic-move-collector-review-plan.md) |
+| `CONFIRM_EXECUTION` / `EXECUTE` / `VERIFY` / `RESTORE` | [`lark-drive-workflow-topic-move-collector-execute.md`](workflow-topic-move-collector-execute.md) |
 
 ## 命令映射
 
@@ -186,17 +186,17 @@ Risk / Structure: `R2-R3` / `S3`
 
 ## 引用文档
 
-- [输入与目标确认](lark-drive-workflow-topic-move-collector-setup.md)
-- [召回](lark-drive-workflow-topic-move-collector-recall.md)
-- [资源解析与内容验证](lark-drive-workflow-topic-move-collector-resolve-verify.md)
-- [审核与计划](lark-drive-workflow-topic-move-collector-review-plan.md)
-- [执行](lark-drive-workflow-topic-move-collector-execute.md)
-- [lark-drive-search](lark-drive-search.md)
-- [lark-drive-inspect](lark-drive-inspect.md)
-- [lark-drive-move](lark-drive-move.md)
-- [lark-drive-create-folder](lark-drive-create-folder.md)
-- [lark-drive-delete](lark-drive-delete.md)
-- [lark-wiki-move](../../lark-wiki/references/lark-wiki-move.md)
-- [lark-wiki-move-to-drive](../../lark-wiki/references/lark-wiki-move-to-drive.md)
-- [lark-wiki-node-create](../../lark-wiki/references/lark-wiki-node-create.md)
-- [lark-wiki-node-delete](../../lark-wiki/references/lark-wiki-node-delete.md)
+- [输入与目标确认](workflow-topic-move-collector-setup.md)
+- [召回](workflow-topic-move-collector-recall.md)
+- [资源解析与内容验证](workflow-topic-move-collector-resolve-verify.md)
+- [审核与计划](workflow-topic-move-collector-review-plan.md)
+- [执行](workflow-topic-move-collector-execute.md)
+- [lark-drive-search](references/lark-drive-search.md)
+- [lark-drive-inspect](references/lark-drive-inspect.md)
+- [lark-drive-move](references/lark-drive-move.md)
+- [lark-drive-create-folder](references/lark-drive-create-folder.md)
+- [lark-drive-delete](references/lark-drive-delete.md)
+- [lark-wiki-move](../lark-wiki/references/lark-wiki-move.md)
+- [lark-wiki-move-to-drive](../lark-wiki/references/lark-wiki-move-to-drive.md)
+- [lark-wiki-node-create](../lark-wiki/references/lark-wiki-node-create.md)
+- [lark-wiki-node-delete](../lark-wiki/references/lark-wiki-node-delete.md)

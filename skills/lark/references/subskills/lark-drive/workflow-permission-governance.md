@@ -4,7 +4,7 @@ Workflow id: `permission_governance`
 
 Risk / Structure: `R2` / `S2`
 
-本文实现已注册的权限治理 workflow。执行前必须先读取 [`lark-drive-workflow.md`](lark-drive-workflow.md) 和 [`../../lark-shared/SKILL.md`](../../lark-shared/GUIDE.md)，并遵循共享执行协议、Artifact Contract、Workflow Loading、认证和写入确认规则。
+本文实现已注册的权限治理 workflow。执行前必须先读取 [`lark-drive-workflow.md`](references/lark-drive-workflow.md) 和 [`../../lark-shared/SKILL.md`](../lark-shared/GUIDE.md)，并遵循共享执行协议、Artifact Contract、Workflow Loading、认证和写入确认规则。
 
 ## 适用范围
 
@@ -46,16 +46,16 @@ Risk / Structure: `R2` / `S2`
 
 ## Progressive Load Map
 
-本表只规定每个 state 需要加载的额外上下文；命令可用范围以 `Command Map` 为准。需要拼装具体 `lark-cli` 命令时，再按需读取 [`lark-drive-workflow-permission-governance-commands.md`](lark-drive-workflow-permission-governance-commands.md)。
+本表只规定每个 state 需要加载的额外上下文；命令可用范围以 `Command Map` 为准。需要拼装具体 `lark-cli` 命令时，再按需读取 [`lark-drive-workflow-permission-governance-commands.md`](workflow-permission-governance-commands.md)。
 
 | State | Required Reference |
 |-------|--------------------|
-| `PARSE_INTENT` | 本文件、[`lark-drive-workflow.md`](lark-drive-workflow.md)、[`../../lark-shared/SKILL.md`](../../lark-shared/GUIDE.md) |
-| `TARGET_INSPECT` | [`lark-drive-inspect.md`](lark-drive-inspect.md) |
-| `DISCOVER_TARGETS` | 容器范围时读取 [`../../lark-wiki/references/lark-wiki-node-list.md`](../../lark-wiki/references/lark-wiki-node-list.md) 或 [`lark-drive-files-list.md`](lark-drive-files-list.md) |
+| `PARSE_INTENT` | 本文件、[`lark-drive-workflow.md`](references/lark-drive-workflow.md)、[`../../lark-shared/SKILL.md`](../lark-shared/GUIDE.md) |
+| `TARGET_INSPECT` | [`lark-drive-inspect.md`](references/lark-drive-inspect.md) |
+| `DISCOVER_TARGETS` | 容器范围时读取 [`../../lark-wiki/references/lark-wiki-node-list.md`](../lark-wiki/references/lark-wiki-node-list.md) 或 [`lark-drive-files-list.md`](references/lark-drive-files-list.md) |
 | `FACT_READ` | `lark-cli schema drive.metas.batch_query`；涉及权限设置读取时使用 `drive +permission-get-setting`；涉及活跃度、访问复核或生命周期判断时再读取 `lark-cli schema drive.file.statistics.get` 和 `lark-cli schema drive.file.view_records.list` |
 | `RISK_ASSESS` | 本文件的 `Risk Classification` |
-| `EXEC_CONFIRM` | 只为用户选择的动作读取 [`lark-drive-apply-permission.md`](lark-drive-apply-permission.md)、[`lark-drive-secure-label.md`](lark-drive-secure-label.md)，或 `lark-cli schema drive.permission.public.patch` / `lark-cli schema drive.permission.members.transfer_owner`；需要确认模板时读取 [`lark-drive-workflow-permission-governance-outputs.md`](lark-drive-workflow-permission-governance-outputs.md) |
+| `EXEC_CONFIRM` | 只为用户选择的动作读取 [`lark-drive-apply-permission.md`](references/lark-drive-apply-permission.md)、[`lark-drive-secure-label.md`](references/lark-drive-secure-label.md)，或 `lark-cli schema drive.permission.public.patch` / `lark-cli schema drive.permission.members.transfer_owner`；需要确认模板时读取 [`lark-drive-workflow-permission-governance-outputs.md`](workflow-permission-governance-outputs.md) |
 | `EXECUTE` | 复用 `EXEC_CONFIRM` 已加载且已确认的写命令上下文 |
 | `VERIFY` | 复用 `FACT_READ` 阶段使用的 read schemas |
 
@@ -111,7 +111,7 @@ Risk / Structure: `R2` / `S2`
 
 ## Command Patterns
 
-本入口不内联命令样例。需要拼装具体 `lark-cli` 命令时，按当前 state 读取 [`lark-drive-workflow-permission-governance-commands.md`](lark-drive-workflow-permission-governance-commands.md)。命令是否允许执行仍以 `Command Map` 和写入规则为准。
+本入口不内联命令样例。需要拼装具体 `lark-cli` 命令时，按当前 state 读取 [`lark-drive-workflow-permission-governance-commands.md`](workflow-permission-governance-commands.md)。命令是否允许执行仍以 `Command Map` 和写入规则为准。
 
 ## Discovery Rules
 
@@ -136,7 +136,7 @@ Wiki space / node 发现：
 Drive folder 发现：
 
 1. `/drive/folder/<folder_token>` 解析为 `target_scope=drive_folder`。默认继续枚举其子文档；只有用户明确要求文件夹自身权限设置时，才额外调用 `drive +permission-get-setting --token <folder_token> --type folder` 读取该文件夹自身设置。
-2. 按 [`lark-drive-files-list.md`](lark-drive-files-list.md) 递归处理 `data.files`、`has_more` 和 `next_page_token`。不要把第一页数量当作完整范围。
+2. 按 [`lark-drive-files-list.md`](references/lark-drive-files-list.md) 递归处理 `data.files`、`has_more` 和 `next_page_token`。不要把第一页数量当作完整范围。
 3. 只对返回项中的 `folder` 继续递归；对子文档按 `type + token` 归一化为 `discovered_targets`。
 4. 如果某个目录分页失败、无 continuation token、权限不足或 API 报错，只阻断该目录分支，并在 `discovery_blockers` 中记录；继续处理其他可枚举分支。
 
@@ -164,7 +164,7 @@ Drive folder 发现：
 - `PolicyReview`：复制、创建副本、打印、下载、评论等依赖 policy 的设置；没有明确 policy 时不要称为高风险。
 - `Unknown`：读取失败、已删除、无权限、API 不支持、协作者名单 / 继承链 / DLP / AI 索引 / 审计日志未覆盖。
 
-每个可审计目标都必须先归一化为 `per_target_permission_assessment`，再按 [`lark-drive-workflow-permission-governance-outputs.md`](lark-drive-workflow-permission-governance-outputs.md) 的 `Semantic Rendering` 渲染。`public_exposure_check` 只是 `target_count=1` 的轻量渲染模式；它和多目标、容器诊断复用同一套语义字段与风险分类。该判断只覆盖当前目标公共访问和协作权限设置，不审计协作者名单、历史权限变更、完整继承链或审计日志。
+每个可审计目标都必须先归一化为 `per_target_permission_assessment`，再按 [`lark-drive-workflow-permission-governance-outputs.md`](workflow-permission-governance-outputs.md) 的 `Semantic Rendering` 渲染。`public_exposure_check` 只是 `target_count=1` 的轻量渲染模式；它和多目标、容器诊断复用同一套语义字段与风险分类。该判断只覆盖当前目标公共访问和协作权限设置，不审计协作者名单、历史权限变更、完整继承链或审计日志。
 
 `AI 检索暴露候选风险` 只是基于权限和标签的代理标签。除非另有工具明确返回索引状态，否则不要声称某个文档已经被 Agent、Copilot 或 RAG 索引。
 
@@ -205,5 +205,5 @@ Drive folder 发现：
 - 容器安全诊断必须包含一句话结论、覆盖情况、风险分级、可定位待复核对象、建议下一步和剩余限制。
 - 待复核对象必须包含稳定 `risk_id`、path/title、URL、type、owner、sec_label、风险原因、证据和建议动作；缺少 URL 时展示 token / node_token 和原因。
 - 容器摘要按规模渐进披露，不能固定 Top N；未完全展开时必须说明完整清单总数，并给出生成 artifact / dry-run / owner 复核清单等 CTA。
-- 面向用户优先使用业务语言和“候选风险 / 待复核 / 待策略确认”；底层字段只作为证据。完整模板按需读取 [`lark-drive-workflow-permission-governance-outputs.md`](lark-drive-workflow-permission-governance-outputs.md)。
+- 面向用户优先使用业务语言和“候选风险 / 待复核 / 待策略确认”；底层字段只作为证据。完整模板按需读取 [`lark-drive-workflow-permission-governance-outputs.md`](workflow-permission-governance-outputs.md)。
 - 不要默认创建文件、飞书文档或长表格；最终回复必须包含已完成事项、验证结果和剩余限制。异步权限申请审批只能表述为“已发起申请”。

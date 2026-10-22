@@ -145,21 +145,21 @@ Agent MUST read the phase file for the active state before executing that state.
 
 | State | Required Phase File |
 |-------|---------------------|
-| `PARSE_SCOPE` | [`lark-drive-workflow-knowledge-organize-discovery.md`](lark-drive-workflow-knowledge-organize-discovery.md) |
-| `INVENTORY` | [`lark-drive-workflow-knowledge-organize-discovery.md`](lark-drive-workflow-knowledge-organize-discovery.md) |
-| `CONTENT_READ` | [`lark-drive-workflow-knowledge-organize-analysis.md`](lark-drive-workflow-knowledge-organize-analysis.md) |
-| `ISSUE_ANALYSIS` | [`lark-drive-workflow-knowledge-organize-analysis.md`](lark-drive-workflow-knowledge-organize-analysis.md) |
-| `RULE_GENERATION` | [`lark-drive-workflow-knowledge-organize-analysis.md`](lark-drive-workflow-knowledge-organize-analysis.md) |
-| `PLAN_GENERATION` | [`lark-drive-workflow-knowledge-organize-planning.md`](lark-drive-workflow-knowledge-organize-planning.md) |
-| `EXEC_CONFIRM` | [`lark-drive-workflow-knowledge-organize-planning.md`](lark-drive-workflow-knowledge-organize-planning.md) |
-| `EXECUTE` | [`lark-drive-workflow-knowledge-organize-execution.md`](lark-drive-workflow-knowledge-organize-execution.md) |
-| `VERIFY` | [`lark-drive-workflow-knowledge-organize-execution.md`](lark-drive-workflow-knowledge-organize-execution.md) |
-| `ROLLBACK_CONFIRM` | [`lark-drive-workflow-knowledge-organize-rollback.md`](lark-drive-workflow-knowledge-organize-rollback.md) |
-| `ROLLBACK` | [`lark-drive-workflow-knowledge-organize-rollback.md`](lark-drive-workflow-knowledge-organize-rollback.md) |
-| `ROLLBACK_VERIFY` | [`lark-drive-workflow-knowledge-organize-rollback.md`](lark-drive-workflow-knowledge-organize-rollback.md) |
-| `ROLLBACK_CLEANUP_CONFIRM` | [`lark-drive-workflow-knowledge-organize-rollback.md`](lark-drive-workflow-knowledge-organize-rollback.md) |
-| `ROLLBACK_CLEANUP` | [`lark-drive-workflow-knowledge-organize-rollback.md`](lark-drive-workflow-knowledge-organize-rollback.md) |
-| `ROLLBACK_CLEANUP_VERIFY` | [`lark-drive-workflow-knowledge-organize-rollback.md`](lark-drive-workflow-knowledge-organize-rollback.md) |
+| `PARSE_SCOPE` | [`lark-drive-workflow-knowledge-organize-discovery.md`](../workflow-knowledge-organize-discovery.md) |
+| `INVENTORY` | [`lark-drive-workflow-knowledge-organize-discovery.md`](../workflow-knowledge-organize-discovery.md) |
+| `CONTENT_READ` | [`lark-drive-workflow-knowledge-organize-analysis.md`](../workflow-knowledge-organize-analysis.md) |
+| `ISSUE_ANALYSIS` | [`lark-drive-workflow-knowledge-organize-analysis.md`](../workflow-knowledge-organize-analysis.md) |
+| `RULE_GENERATION` | [`lark-drive-workflow-knowledge-organize-analysis.md`](../workflow-knowledge-organize-analysis.md) |
+| `PLAN_GENERATION` | [`lark-drive-workflow-knowledge-organize-planning.md`](../workflow-knowledge-organize-planning.md) |
+| `EXEC_CONFIRM` | [`lark-drive-workflow-knowledge-organize-planning.md`](../workflow-knowledge-organize-planning.md) |
+| `EXECUTE` | [`lark-drive-workflow-knowledge-organize-execution.md`](../workflow-knowledge-organize-execution.md) |
+| `VERIFY` | [`lark-drive-workflow-knowledge-organize-execution.md`](../workflow-knowledge-organize-execution.md) |
+| `ROLLBACK_CONFIRM` | [`lark-drive-workflow-knowledge-organize-rollback.md`](../workflow-knowledge-organize-rollback.md) |
+| `ROLLBACK` | [`lark-drive-workflow-knowledge-organize-rollback.md`](../workflow-knowledge-organize-rollback.md) |
+| `ROLLBACK_VERIFY` | [`lark-drive-workflow-knowledge-organize-rollback.md`](../workflow-knowledge-organize-rollback.md) |
+| `ROLLBACK_CLEANUP_CONFIRM` | [`lark-drive-workflow-knowledge-organize-rollback.md`](../workflow-knowledge-organize-rollback.md) |
+| `ROLLBACK_CLEANUP` | [`lark-drive-workflow-knowledge-organize-rollback.md`](../workflow-knowledge-organize-rollback.md) |
+| `ROLLBACK_CLEANUP_VERIFY` | [`lark-drive-workflow-knowledge-organize-rollback.md`](../workflow-knowledge-organize-rollback.md) |
 
 ## Command Map
 
@@ -211,11 +211,11 @@ Never request permission automatically, never batch permission requests, and nev
 
 ## References
 
-- [Discovery phase](lark-drive-workflow-knowledge-organize-discovery.md)
-- [Analysis phase](lark-drive-workflow-knowledge-organize-analysis.md)
-- [Planning phase](lark-drive-workflow-knowledge-organize-planning.md)
-- [Execution phase](lark-drive-workflow-knowledge-organize-execution.md)
-- [Rollback phase](lark-drive-workflow-knowledge-organize-rollback.md)
+- [Discovery phase](../workflow-knowledge-organize-discovery.md)
+- [Analysis phase](../workflow-knowledge-organize-analysis.md)
+- [Planning phase](../workflow-knowledge-organize-planning.md)
+- [Execution phase](../workflow-knowledge-organize-execution.md)
+- [Rollback phase](../workflow-knowledge-organize-rollback.md)
 - [lark-shared](../../lark-shared/GUIDE.md)
 - [lark-drive](../GUIDE.md)
 - [lark-drive-files-list](lark-drive-files-list.md)

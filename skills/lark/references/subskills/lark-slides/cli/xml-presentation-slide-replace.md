@@ -8,4 +8,4 @@ lark-cli slides +replace-slide --as user \
   --parts '[{"action":"block_replace","block_id":"bUn","replacement":"<shape type=\"text\" topLeftX=\"80\" topLeftY=\"80\" width=\"800\" height=\"120\"><content textType=\"title\" fontSize=\"32\"><p>新标题</p></content></shape>"}]'
 ```
 
-`block_replace` 使用 `block_id` 和 `replacement`；追加元素使用 `block_insert` 和 `insertion`。完整 parts 结构、验证和限制见 [lark-slides-replace-slide.md](lark-slides-replace-slide.md)。
+`block_replace` 使用 `block_id` 和 `replacement`；追加元素使用 `block_insert` 和 `insertion`。完整 parts 结构、验证和限制见 [lark-slides-replace-slide.md](../references/cli/lark-slides-replace-slide.md)。

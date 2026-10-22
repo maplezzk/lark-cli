@@ -10,8 +10,8 @@
 
 执行本文档规则前：
 
-1. 按 [`../../lark-shared/SKILL.md`](../../lark-shared/GUIDE.md) 处理身份、认证和权限。
-2. 按 [`lark-drive-search.md`](lark-drive-search.md) 处理 `drive +search` 语法、过滤条件、单批最多 5 页和身份语义；本 workflow 的全量续批规则见下文。
+1. 按 [`../../lark-shared/SKILL.md`](../lark-shared/GUIDE.md) 处理身份、认证和权限。
+2. 按 [`lark-drive-search.md`](references/lark-drive-search.md) 处理 `drive +search` 语法、过滤条件、单批最多 5 页和身份语义；本 workflow 的全量续批规则见下文。
 
 ## 搜索原则
 
@@ -127,7 +127,7 @@
 
 1. 确认全部基础和增强 query 的 `status=complete` 且 `has_more=false`，再固化完整 `candidate_items`，包含去重结果、`source_queries`、`match_channels`、`snippets` 和 `dedupe_status`。
 2. 将 `current_state` 设置为 `RESOURCE_RESOLVE`。
-3. 加载 [`lark-drive-workflow-topic-move-collector-resolve-verify.md`](lark-drive-workflow-topic-move-collector-resolve-verify.md)。
+3. 加载 [`lark-drive-workflow-topic-move-collector-resolve-verify.md`](workflow-topic-move-collector-resolve-verify.md)。
 4. 把完整 `candidate_items` 交给 `RESOURCE_RESOLVE`。
 5. 不得直接进入 `RELEVANCE_CLASSIFY`、`PLAN_MOVE` 或展示相关性结果。
 6. 不得用搜索标题、摘要或 query 命中直接生成高 / 中 / 低相关分组。

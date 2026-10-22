@@ -8,7 +8,7 @@ This file owns confirmed write execution, PathTokenMap, progress reporting, veri
 
 Before executing rules in this file:
 
-1. `active_plan_items` and `execution_scope` MUST already exist from [`lark-drive-workflow-knowledge-organize-planning.md`](lark-drive-workflow-knowledge-organize-planning.md).
+1. `active_plan_items` and `execution_scope` MUST already exist from [`lark-drive-workflow-knowledge-organize-planning.md`](workflow-knowledge-organize-planning.md).
 2. `target_tree` and `resource_items` MUST already exist.
 3. Use the `PlanItem` structure already produced by the planning phase. Do not regenerate or revise plans in this file.
 4. Follow command syntax, scope requirements, and confirmation behavior from referenced shortcut docs.

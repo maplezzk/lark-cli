@@ -1,6 +1,6 @@
 # 权限治理 Command Patterns
 
-本文只提供 `permission_governance` workflow 的具体 `lark-cli` 命令样例。只有进入对应 state 且需要拼装命令时才读取本文；命令可用范围仍以 [`lark-drive-workflow-permission-governance.md`](lark-drive-workflow-permission-governance.md) 的 `Command Map` 为准。
+本文只提供 `permission_governance` workflow 的具体 `lark-cli` 命令样例。只有进入对应 state 且需要拼装命令时才读取本文；命令可用范围仍以 [`lark-drive-workflow-permission-governance.md`](workflow-permission-governance.md) 的 `Command Map` 为准。
 
 ## 目录
 
